@@ -2641,3 +2641,54 @@ html, body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", 
   .timer-page .content-body { column-gap:72px; }
 }
 
+/* Keep the welcome/auth landing screen within the visible viewport on phones,
+   installed PWAs, tablets, and desktop browsers. */
+.phone-screen:has(.welcome-flow) { min-height: 0; }
+.phone-screen:has(.welcome-flow) .welcome-flow {
+  min-height: 0;
+  overflow: hidden;
+  justify-content: center;
+  padding: 20px 28px;
+}
+.phone-screen:has(.welcome-flow) .welcome-brand { margin: 0 auto 20px; }
+.phone-screen:has(.welcome-flow) .welcome-feature-row { margin: 18px 0 20px; }
+.phone-screen:has(.welcome-flow) .welcome-actions { margin-top: 0; }
+
+@media (max-width: 600px) {
+  .phone-screen:has(.welcome-flow) .welcome-flow {
+    padding: calc(12px + env(safe-area-inset-top)) 22px calc(12px + env(safe-area-inset-bottom));
+  }
+  .phone-screen:has(.welcome-flow) .welcome-brand { margin-bottom: 12px; }
+  .phone-screen:has(.welcome-flow) .welcome-mascot { width: 88px; height: 62px; }
+  .phone-screen:has(.welcome-flow) .welcome-logotype { margin-top: 0; font-size: 24px; line-height: 29px; }
+  .phone-screen:has(.welcome-flow) .welcome-copy h1 { margin-bottom: 5px; font-size: 25px; line-height: 1.1; }
+  .phone-screen:has(.welcome-flow) .welcome-copy strong { font-size: 15px; line-height: 20px; }
+  .phone-screen:has(.welcome-flow) .welcome-copy p { margin-top: 3px; font-size: 13px; line-height: 17px; }
+  .phone-screen:has(.welcome-flow) .welcome-feature-row { margin: 14px 0 16px; }
+  .phone-screen:has(.welcome-flow) .welcome-feature-row span { min-height: 58px; }
+  .phone-screen:has(.welcome-flow) .welcome-actions { gap: 8px; padding: 12px; }
+  .phone-screen:has(.welcome-flow) .welcome-actions > strong { font-size: 16px; line-height: 20px; }
+  .phone-screen:has(.welcome-flow) .google-auth-button,
+  .phone-screen:has(.welcome-flow) .phone-auth-button { height: 46px; }
+  .phone-screen:has(.welcome-flow) .welcome-actions > small { font-size: 11px; line-height: 14px; }
+}
+
+@media (min-width: 601px) {
+  .phone-screen:has(.welcome-flow) { height: 100dvh; min-height: 0; }
+  .phone-screen:has(.welcome-flow) .welcome-flow { width: min(100%, 560px); flex: 0 1 560px; padding: 24px 38px; }
+}
+
+@media (max-height: 740px) {
+  .phone-screen:has(.welcome-flow) .welcome-flow { padding-top: calc(10px + env(safe-area-inset-top)); padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+  .phone-screen:has(.welcome-flow) .welcome-brand { margin-bottom: 8px; }
+  .phone-screen:has(.welcome-flow) .welcome-mascot { width: 76px; height: 50px; }
+  .phone-screen:has(.welcome-flow) .welcome-logotype { font-size: 22px; line-height: 26px; }
+  .phone-screen:has(.welcome-flow) .welcome-copy h1 { font-size: 23px; line-height: 1.05; margin-bottom: 3px; }
+  .phone-screen:has(.welcome-flow) .welcome-copy p { font-size: 12px; line-height: 15px; }
+  .phone-screen:has(.welcome-flow) .welcome-feature-row { margin: 10px 0 12px; }
+  .phone-screen:has(.welcome-flow) .welcome-feature-row span { min-height: 50px; }
+  .phone-screen:has(.welcome-flow) .welcome-actions { gap: 6px; padding: 10px 12px; }
+  .phone-screen:has(.welcome-flow) .google-auth-button,
+  .phone-screen:has(.welcome-flow) .phone-auth-button { height: 40px; }
+}
+

@@ -2,6 +2,21 @@
 
 Mobile-first Next.js PWA for exam practice. The app uses the supplied Cloud.ai mark, Figma-exported UI assets, dark style-guide tokens, and Cloudy mascot animations.
 
+## Firebase Auth and Supabase
+
+The Firebase project is `pyq-cloud`. Configure the Firebase web app values in the `NEXT_PUBLIC_FIREBASE_*` variables from `.env.example`. The browser app uses Firebase for Google, email/password, and phone sign-in, and Supabase project `nhjvfifbxehnewnlyxgw` for the app database.
+
+`supabase/migrations/20261119000100_firebase_auth_bridge.sql` has been applied to that Supabase project. It links verified Firebase identities to existing profile UUIDs, preserves existing profile data, and routes per-user RLS through that profile mapping. The Firebase Third-Party Auth integration must also be enabled for the same project.
+
+Supabase requires Firebase ID tokens to include `role: authenticated`. The `functions` directory contains the Firebase Auth creation trigger that adds this claim. Deploy it after enabling Firebase billing (required for Cloud Functions and live phone SMS):
+
+```sh
+cd functions && npm install
+cd .. && firebase deploy --only functions
+```
+
+For local development, put the matching Supabase project URL, publishable key, and server-only secret in the ignored `.env.local`; never expose `SUPABASE_SECRET_KEY` with a `NEXT_PUBLIC_` prefix. The server secret is used only by admin API routes.
+
 ## Run
 
 ```sh

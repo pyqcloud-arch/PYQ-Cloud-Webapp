@@ -3,6 +3,20 @@
 import { createElement, Fragment, useEffect, useRef, useState } from "react";
 import { createClient } from "../lib/supabase/client";
 import { Lottie } from "lottie-react";
+import {
+  createUserWithEmailAndPassword,
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  RecaptchaVerifier,
+  sendEmailVerification,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+  signInWithPhoneNumber,
+  signInWithPopup,
+  signOut as firebaseSignOut,
+  updatePassword as firebaseUpdatePassword,
+} from "firebase/auth";
+import { createGoogleProvider, getFirebaseAuth } from "../lib/firebase/client";
 
 const explanationTags = new Set([
   "p", "strong", "b", "em", "i", "ul", "ol", "li", "br",
@@ -163,6 +177,38 @@ function summarizeAttempts(attempts) {
 }
 
 const supabase = createClient();
+const usesFirebaseAuth = () => Boolean(process.env.NEXT_PUBLIC_FIREBASE_API_KEY);
+const wait = (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+async function syncFirebaseProfile(firebaseUser) {
+  let lastError;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      // The user-created trigger sets this claim asynchronously on Firebase.
+      await firebaseUser.getIdToken(attempt > 0);
+      const { data, error } = await supabase.rpc("ensure_firebase_profile", {
+        p_full_name: firebaseUser.displayName || null,
+      });
+      if (error) throw error;
+      const profile = Array.isArray(data) ? data[0] : data;
+      if (!profile?.id) throw new Error("The Firebase profile could not be linked to the app database.");
+      return {
+        id: profile.id,
+        firebase_uid: firebaseUser.uid,
+        email: firebaseUser.email || profile.email || "",
+        phone: firebaseUser.phoneNumber || profile.phone || "",
+        created_at: profile.created_at,
+        user_metadata: profile.user_metadata || {},
+        authProvider: "firebase",
+      };
+    } catch (error) {
+      lastError = error;
+      if (attempt < 7) await wait(750);
+    }
+  }
+  throw lastError || new Error("Could not connect the Firebase account to the app database.");
+}
+
 const unauthenticatedScreens = new Set(["Welcome", "Auth", "Phone Auth", "Verify Phone", "Auth Confirmation", "Reset Password", "Reset Email Sent"]);
 function hasCompletedOnboarding(user) {
   if (!user?.id) return false;
@@ -237,6 +283,8 @@ export default function Page() {
   const [phoneOtpError, setPhoneOtpError] = useState(false);
   const [phoneOtpErrorMessage, setPhoneOtpErrorMessage] = useState("Incorrect code. Check the code and try again.");
   const [phoneResendCountdown, setPhoneResendCountdown] = useState(30);
+  const phoneConfirmationRef = useRef(null);
+  const recaptchaVerifierRef = useRef(null);
   const [aboutExamCount, setAboutExamCount] = useState("0");
   const [aboutTargetYear, setAboutTargetYear] = useState("");
   const [accountEmail, setAccountEmail] = useState("");
@@ -252,6 +300,28 @@ export default function Page() {
   const [authError, setAuthError] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   const [user, setUser] = useState(null);
+  const updateUserMetadata = async (patch) => {
+    if (user?.authProvider === "firebase") {
+      const { data, error } = await supabase.rpc("update_my_firebase_metadata", { p_patch: patch });
+      if (error) throw error;
+      const metadata = data || {};
+      setUser((current) => current ? { ...current, user_metadata: metadata } : current);
+      return { data: { user: { ...user, user_metadata: metadata } }, error: null };
+    }
+    const result = await supabase.auth.updateUser({ data: { ...(user?.user_metadata || {}), ...patch } });
+    if (!result.error && result.data?.user) setUser(result.data.user);
+    return result;
+  };
+  const signOutApp = async () => {
+    try {
+      if (usesFirebaseAuth() && getFirebaseAuth().currentUser) await firebaseSignOut(getFirebaseAuth());
+      if (!usesFirebaseAuth()) await supabase.auth.signOut();
+      setUser(null);
+      setProfileName("");
+      setAccountEmail("");
+      resetNavigation("Welcome");
+    } catch (error) { setToast(error.message || "Could not sign out."); }
+  };
   const [authBusy, setAuthBusy] = useState(false);
   const [questions, setQuestions] = useState([]);
   const [practiceCatalog, setPracticeCatalog] = useState(null);
@@ -443,6 +513,11 @@ export default function Page() {
 
   useEffect(() => {
     const requestedScreen = new URLSearchParams(window.location.search).get("screen");
+    const query = new URLSearchParams(window.location.search);
+    if (query.get("reset") === "complete") {
+      setAuthMode("signin");
+      setAuthNotice("Your password was reset. Sign in with your new password.");
+    }
     for (const key of Object.keys(window.localStorage)) if (key.startsWith("pyq-")) window.localStorage.removeItem(key);
     setBookmarks([]); setMistakes([]); setNotes([]); setHabits([]); setHabitLogs([]); setTestHistory([]); setAttemptHistory([]); setAnalytics(summarizeAttempts([]));
     setHydrated(true);
@@ -452,41 +527,94 @@ export default function Page() {
     const standalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
     setIsInstalledApp(standalone);
     let active = true;
-    supabase.auth.getSession().then(({ data }) => {
-      if (!active) return;
-      const sessionUser = data.session?.user ?? null;
-      setUser(sessionUser);
-      setProfileName(sessionUser?.user_metadata?.full_name ?? "");
-      setAccountEmail(sessionUser?.email ?? "");
-      setAccountPhone(sessionUser?.phone ?? "");
-      if (sessionUser && new URLSearchParams(window.location.search).get("next") === "/admin") window.location.replace("/admin");
-      else if (sessionUser) resetNavigation(requestedScreen === "Reset Password" ? "Reset Password" : hasCompletedOnboarding(sessionUser) ? "Home" : "About You");
-      else resetNavigation(requestedScreen === "Auth" || requestedScreen === "Reset Password" ? requestedScreen : "Welcome");
-      setAuthReady(true);
-      loadAvatar(sessionUser);
-      loadUserData(sessionUser);
-    }).catch(() => {
-      if (!active) return;
-      setUser(null);
-      resetNavigation(requestedScreen === "Auth" || requestedScreen === "Reset Password" ? requestedScreen : "Welcome");
-      setAuthReady(true);
-    });
-    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
-      const nextUser = session?.user ?? null;
-      setUser(nextUser);
-      loadAvatar(nextUser);
-      if (nextUser) { setAuthEmail(nextUser.email ?? ""); setProfileName(nextUser.user_metadata?.full_name ?? ""); }
-      setAccountEmail(nextUser?.email ?? "");
-      if (nextUser?.phone) setAccountPhone(nextUser.phone);
-      if (_event === "PASSWORD_RECOVERY") resetNavigation("Reset Password");
-      else if (_event === "SIGNED_IN") {
-        if (new URLSearchParams(window.location.search).get("next") === "/admin") { window.location.replace("/admin"); return; }
-        resetNavigation(hasCompletedOnboarding(nextUser) ? "Home" : "About You");
+    let authListener = null;
+    let firebaseUnsubscribe = () => {};
+    if (usesFirebaseAuth()) {
+      try {
+        resetNavigation(requestedScreen === "Auth" ? "Auth" : "Welcome");
+        firebaseUnsubscribe = onAuthStateChanged(getFirebaseAuth(), async (firebaseUser) => {
+          if (!active) return;
+          if (!firebaseUser) {
+            setUser(null);
+            setAccountEmail("");
+            setAccountPhone("");
+            resetNavigation(requestedScreen === "Auth" ? "Auth" : "Welcome");
+            setAuthReady(true);
+            return;
+          }
+          if (firebaseUser.email && !firebaseUser.emailVerified && !firebaseUser.phoneNumber) {
+            setUser(null);
+            setAuthEmail(firebaseUser.email);
+            setAuthReady(true);
+            resetNavigation("Auth Confirmation");
+            return;
+          }
+          try {
+            const firebaseProfile = await syncFirebaseProfile(firebaseUser);
+            if (!active) return;
+            setUser(firebaseProfile);
+            setProfileName(firebaseProfile.user_metadata.full_name || firebaseUser.displayName || "");
+            setAuthEmail(firebaseProfile.email);
+            setAccountEmail(firebaseProfile.email);
+            setAccountPhone(firebaseProfile.phone);
+            setAuthError("");
+            loadAvatar(firebaseProfile);
+            if (new URLSearchParams(window.location.search).get("next") === "/admin") {
+              window.location.replace("/admin");
+              return;
+            }
+            resetNavigation(hasCompletedOnboarding(firebaseProfile) ? "Home" : "About You");
+            setAuthReady(true);
+            window.setTimeout(() => loadUserData(firebaseProfile), 0);
+          } catch (error) {
+            console.error("Firebase profile sync failed:", error);
+            setAuthReady(true);
+            setAuthError("Firebase sign-in is waiting for its Supabase profile and role setup. Try again shortly.");
+            setToast("Could not connect your Firebase account to your Supabase profile.");
+          }
+        });
+      } catch (error) {
+        console.error("Firebase Auth initialization failed:", error);
+        setAuthReady(true);
       }
-      else if (_event === "SIGNED_OUT") resetNavigation("Welcome");
-      if (_event === "SIGNED_IN" || _event === "SIGNED_OUT") setAuthReady(true);
-      window.setTimeout(() => loadUserData(nextUser), 0);
-    });
+    } else {
+      supabase.auth.getSession().then(({ data }) => {
+        if (!active) return;
+        const sessionUser = data.session?.user ?? null;
+        setUser(sessionUser);
+        setProfileName(sessionUser?.user_metadata?.full_name ?? "");
+        setAccountEmail(sessionUser?.email ?? "");
+        setAccountPhone(sessionUser?.phone ?? "");
+        if (sessionUser && new URLSearchParams(window.location.search).get("next") === "/admin") window.location.replace("/admin");
+        else if (sessionUser) resetNavigation(requestedScreen === "Reset Password" ? "Reset Password" : hasCompletedOnboarding(sessionUser) ? "Home" : "About You");
+        else resetNavigation(requestedScreen === "Auth" || requestedScreen === "Reset Password" ? requestedScreen : "Welcome");
+        setAuthReady(true);
+        loadAvatar(sessionUser);
+        loadUserData(sessionUser);
+      }).catch(() => {
+        if (!active) return;
+        setUser(null);
+        resetNavigation(requestedScreen === "Auth" || requestedScreen === "Reset Password" ? requestedScreen : "Welcome");
+        setAuthReady(true);
+      });
+      const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+        const nextUser = session?.user ?? null;
+        setUser(nextUser);
+        loadAvatar(nextUser);
+        if (nextUser) { setAuthEmail(nextUser.email ?? ""); setProfileName(nextUser.user_metadata?.full_name ?? ""); }
+        setAccountEmail(nextUser?.email ?? "");
+        if (nextUser?.phone) setAccountPhone(nextUser.phone);
+        if (_event === "PASSWORD_RECOVERY") resetNavigation("Reset Password");
+        else if (_event === "SIGNED_IN") {
+          if (new URLSearchParams(window.location.search).get("next") === "/admin") { window.location.replace("/admin"); return; }
+          resetNavigation(hasCompletedOnboarding(nextUser) ? "Home" : "About You");
+        }
+        else if (_event === "SIGNED_OUT") resetNavigation("Welcome");
+        if (_event === "SIGNED_IN" || _event === "SIGNED_OUT") setAuthReady(true);
+        window.setTimeout(() => loadUserData(nextUser), 0);
+      });
+      authListener = data;
+    }
     const databaseQuestions = (async () => {
       const rows = [];
       const pageSize = 1000;
@@ -521,7 +649,8 @@ export default function Page() {
     window.addEventListener("appinstalled", onInstalled);
     return () => {
       active = false;
-      authListener.subscription.unsubscribe();
+      authListener?.subscription?.unsubscribe();
+      firebaseUnsubscribe();
       window.removeEventListener("beforeinstallprompt", onInstall);
       window.removeEventListener("appinstalled", onInstalled);
       displayMode.removeEventListener?.("change", onDisplayModeChange);
@@ -563,7 +692,8 @@ export default function Page() {
   useEffect(() => {
     if (!hydrated) return undefined;
     if (!user) {
-      setHabits([]); setHabitLogs([]);
+      setHabits((items) => items.length ? [] : items);
+      setHabitLogs((items) => items.length ? [] : items);
       return undefined;
     }
     let active = true;
@@ -813,19 +943,23 @@ export default function Page() {
     const incorrect = answered - correct;
     const completedAt = new Date().toISOString();
     const result = { subject, questions: testQuestions, answers: testAnswers, reviewFlags: testReviewFlags, answered, correct, incorrect, unanswered: testQuestions.length - answered, accuracy: answered ? Math.round(correct / answered * 100) : 0, score: Number((correct * 2 - incorrect * (2 / 3)).toFixed(2)), completedAt };
-    const { data: authData, error: authError } = await supabase.auth.getUser();
-    if (authError || !authData.user) { testSubmitBusyRef.current = false; setToast("Your Supabase session expired. Sign in again to save this test."); return; }
-    const currentHistory = Array.isArray(authData.user.user_metadata?.test_history) ? authData.user.user_metadata.test_history : [];
+    let currentUser = user;
+    if (user?.authProvider !== "firebase") {
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+      if (authError || !authData.user) { testSubmitBusyRef.current = false; setToast("Your sign-in session expired. Sign in again to save this test."); return; }
+      currentUser = authData.user;
+    }
+    if (!currentUser) { testSubmitBusyRef.current = false; setToast("Sign in again to save this test."); return; }
+    const currentHistory = Array.isArray(currentUser.user_metadata?.test_history) ? currentUser.user_metadata.test_history : [];
     const savedResult = {
       subject, questionIds: testQuestions.map((item) => item.id), answers: testAnswers, reviewFlags: testReviewFlags,
       answered, correct, incorrect, unanswered: testQuestions.length - answered,
       accuracy: result.accuracy, score: result.score, completedAt,
     };
-    const { data: updatedAuth, error: saveError } = await supabase.auth.updateUser({
-      data: { ...authData.user.user_metadata, test_history: [savedResult, ...currentHistory].slice(0, 5) },
-    });
-    if (saveError) { testSubmitBusyRef.current = false; setToast("Could not save this test to your Supabase account. Please try again."); return; }
-    setUser(updatedAuth.user);
+    try {
+      const { error: saveError } = await updateUserMetadata({ test_history: [savedResult, ...currentHistory].slice(0, 5) });
+      if (saveError) throw saveError;
+    } catch { testSubmitBusyRef.current = false; setToast("Could not save this test to your account. Please try again."); return; }
     setSubmittedTest(result); setTestResultFilter("All"); setShowTestResultFilters(false); setTestHistory((history) => [result, ...history].slice(0, 5));
     setShowSubmitTest(false); setShowQuestionPalette(false); setTimerRunning(false); setTestInProgress(false); go("Test Results");
   };
@@ -898,9 +1032,8 @@ export default function Page() {
   const saveNoteOrder = async (items) => {
     if (!user) return;
     const note_order = items.map((item) => item.id);
-    const { data, error } = await supabase.auth.updateUser({ data: { ...user.user_metadata, note_order } });
-    if (error) { setToast("Could not save note order."); return; }
-    setUser((current) => current ? { ...current, user_metadata: data.user.user_metadata } : current);
+    try { const { error } = await updateUserMetadata({ note_order }); if (error) throw error; }
+    catch { setToast("Could not save note order."); }
   };
   const moveNote = (sourceId, targetId) => {
     if (sourceId === targetId) return;
@@ -1009,36 +1142,95 @@ export default function Page() {
       setAuthBusy(false);
       return setAuthError("The passwords don’t match. Check both fields and try again.");
     }
-    let result;
     try {
-      result = authMode === "signup"
+      if (usesFirebaseAuth()) {
+        const credential = authMode === "signup"
+          ? await createUserWithEmailAndPassword(getFirebaseAuth(), email, password)
+          : await signInWithEmailAndPassword(getFirebaseAuth(), email, password);
+        if (authMode === "signup") {
+          const continueUrl = new URL("/", window.location.origin);
+          continueUrl.searchParams.set("screen", "Auth Confirmation");
+          await sendEmailVerification(credential.user, { url: continueUrl.toString(), handleCodeInApp: false });
+          setAuthNotice(`We sent a verification link to ${email}. Verify your address, then return here to continue.`);
+          setAuthBusy(false);
+          setAuthEmail(email);
+          go("Auth Confirmation");
+          return;
+        }
+        setAuthBusy(false);
+        setAuthEmail(email);
+        setToast(authMode === "signup" ? "Account created" : "You’re signed in");
+        if (new URLSearchParams(window.location.search).get("next") === "/admin") { window.location.replace("/admin"); return; }
+        go(authMode === "signup" ? "About You" : "Home");
+        return;
+      }
+
+      const result = authMode === "signup"
         ? await supabase.auth.signUp({ email, password, options: { emailRedirectTo: `${window.location.origin}/` } })
         : await supabase.auth.signInWithPassword({ email, password });
+      setAuthBusy(false);
+      if (result.error) return setAuthError(result.error.message);
+      if (authMode === "signup" && !result.data.session) {
+        setAuthNotice(`We sent a confirmation link to ${email}. Open it to activate your account, then come back here to sign in.`);
+        go("Auth Confirmation");
+        return;
+      }
+      setAuthEmail(email);
+      setToast(authMode === "signup" ? "Account created" : "You’re signed in");
+      if (new URLSearchParams(window.location.search).get("next") === "/admin") { window.location.replace("/admin"); return; }
+      go(authMode === "signup" ? "About You" : "Home");
     } catch {
       setAuthBusy(false);
-      return setAuthError("Could not reach the sign-in service. Check your connection and try again.");
+      return setAuthError("Could not complete sign-in. Check your details and try again.");
     }
-    setAuthBusy(false);
-    if (result.error) return setAuthError(result.error.message);
-    if (authMode === "signup" && !result.data.session) {
-      setAuthNotice(`We sent a confirmation link to ${email}. Open it to activate your account, then come back here to sign in.`);
-      go("Auth Confirmation");
-      return;
-    }
-    setAuthEmail(email);
-    setToast(authMode === "signup" ? "Account created" : "You’re signed in");
-    if (new URLSearchParams(window.location.search).get("next") === "/admin") { window.location.replace("/admin"); return; }
-    go(authMode === "signup" ? "About You" : "Home");
   };
   const resendSignupConfirmation = async () => {
     setAuthBusy(true);
     setAuthError("");
     try {
+      if (usesFirebaseAuth()) {
+        const firebaseUser = getFirebaseAuth().currentUser;
+        if (!firebaseUser) throw new Error("Sign in again to request a verification email.");
+        await sendEmailVerification(firebaseUser);
+        setAuthNotice(`A new verification link was sent to ${authEmail.trim().toLowerCase()}.`);
+        return;
+      }
       const { error } = await supabase.auth.resend({ type: "signup", email: authEmail.trim().toLowerCase() });
       if (error) throw error;
       setAuthNotice(`A new confirmation link was sent to ${authEmail.trim().toLowerCase()}.`);
     } catch (error) { setAuthError(error.message || "Could not resend the confirmation email. Try again shortly."); }
     finally { setAuthBusy(false); }
+  };
+  const confirmFirebaseEmail = async () => {
+    if (!usesFirebaseAuth()) {
+      setAuthMode("signin");
+      setAuthError("");
+      setAuthNotice("");
+      go("Auth");
+      return;
+    }
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      const firebaseUser = getFirebaseAuth().currentUser;
+      if (!firebaseUser) throw new Error("Sign in again with your email and password, then verify your address.");
+      await firebaseUser.reload();
+      if (!firebaseUser.emailVerified) throw new Error("Your email is not verified yet. Open the confirmation link, then try again.");
+      await firebaseUser.getIdToken(true);
+      const firebaseProfile = await syncFirebaseProfile(firebaseUser);
+      setUser(firebaseProfile);
+      setProfileName(firebaseProfile.user_metadata.full_name || firebaseUser.displayName || "");
+      setAuthEmail(firebaseProfile.email);
+      setAccountEmail(firebaseProfile.email);
+      setAccountPhone(firebaseProfile.phone);
+      loadAvatar(firebaseProfile);
+      await loadUserData(firebaseProfile);
+      go("About You");
+    } catch (error) {
+      setAuthError(error.message || "Could not verify your email yet. Try again shortly.");
+    } finally {
+      setAuthBusy(false);
+    }
   };
   const sendPasswordReset = async (event) => {
     event.preventDefault();
@@ -1048,9 +1240,13 @@ export default function Page() {
     const email = authEmail.trim().toLowerCase();
     try {
       const redirectUrl = new URL("/", window.location.origin);
-      redirectUrl.searchParams.set("screen", "Reset Password");
-      const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: redirectUrl.toString() });
-      if (error) throw error;
+      redirectUrl.searchParams.set("screen", "Auth");
+      redirectUrl.searchParams.set("reset", "complete");
+      if (usesFirebaseAuth()) await sendPasswordResetEmail(getFirebaseAuth(), email, { url: redirectUrl.toString(), handleCodeInApp: false });
+      else {
+        const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: redirectUrl.toString() });
+        if (error) throw error;
+      }
       setAuthEmail(email);
       setAuthNotice(`If an account exists for ${email}, we sent a password reset link.`);
       go("Reset Email Sent");
@@ -1065,8 +1261,14 @@ export default function Page() {
     setAuthBusy(true);
     setAuthError("");
     try {
-      const { error } = await supabase.auth.updateUser({ password });
-      if (error) throw error;
+      if (usesFirebaseAuth()) {
+        const firebaseUser = getFirebaseAuth().currentUser;
+        if (!firebaseUser) throw new Error("Open the password reset link again to continue.");
+        await firebaseUpdatePassword(firebaseUser, password);
+      } else {
+        const { error } = await supabase.auth.updateUser({ password });
+        if (error) throw error;
+      }
       setAuthBusy(false);
       setAuthError("");
       setToast("Password updated. You’re signed in.");
@@ -1078,9 +1280,12 @@ export default function Page() {
       const next = new URLSearchParams(window.location.search).get("next");
       const redirectTo = new URL("/", window.location.origin);
       if (next === "/admin") redirectTo.searchParams.set("next", "/admin");
-      const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: redirectTo.toString() } });
-      if (error) setToast(error.message);
-    } catch { setToast("Google sign-in is not configured for this Supabase project yet."); }
+      if (usesFirebaseAuth()) await signInWithPopup(getFirebaseAuth(), createGoogleProvider());
+      else {
+        const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: redirectTo.toString() } });
+        if (error) throw error;
+      }
+    } catch (error) { setToast(error?.message || "Google sign-in could not be completed."); }
   };
   const sendPhoneCode = async (event) => {
     event?.preventDefault?.();
@@ -1088,6 +1293,19 @@ export default function Page() {
     if (!/^\+91\d{10}$/.test(phone)) return setToast("Enter a valid 10-digit Indian mobile number.");
     setPhoneBusy(true);
     try {
+      if (usesFirebaseAuth()) {
+        const firebaseAuth = getFirebaseAuth();
+        recaptchaVerifierRef.current?.clear();
+        recaptchaVerifierRef.current = new RecaptchaVerifier(firebaseAuth, "recaptcha-container", { size: "invisible" });
+        phoneConfirmationRef.current = await signInWithPhoneNumber(firebaseAuth, phone, recaptchaVerifierRef.current);
+        setPhoneNumber(phone);
+        setPhoneCode("");
+        setPhoneOtpError(false);
+        setPhoneOtpErrorMessage("Incorrect code. Check the code and try again.");
+        setPhoneResendCountdown(30);
+        go("Verify Phone");
+        return;
+      }
       const { error } = await supabase.auth.signInWithOtp({ phone, options: { shouldCreateUser: true } });
       if (error) throw error;
       setPhoneNumber(phone);
@@ -1115,6 +1333,16 @@ export default function Page() {
     setPhoneBusy(true);
     setPhoneOtpError(false);
     try {
+      if (usesFirebaseAuth()) {
+        if (!phoneConfirmationRef.current) throw new Error("Request a new verification code first.");
+        const { user: firebaseUser } = await phoneConfirmationRef.current.confirm(phoneCode.trim());
+        await firebaseUser.getIdToken(true);
+        phoneConfirmationRef.current = null;
+        setAccountPhone(firebaseUser.phoneNumber || phoneNumber);
+        setPhoneOtpErrorMessage("Incorrect code. Check the code and try again.");
+        go("Phone Verified");
+        return;
+      }
       const { data, error } = await supabase.auth.verifyOtp({ phone: phoneNumber, token: phoneCode.trim(), type: "sms" });
       if (error) throw error;
       setUser(data.user ?? null);
@@ -1133,6 +1361,15 @@ export default function Page() {
     setPhoneBusy(true);
     setPhoneOtpError(false);
     try {
+      if (usesFirebaseAuth()) {
+        const firebaseAuth = getFirebaseAuth();
+        recaptchaVerifierRef.current?.clear();
+        recaptchaVerifierRef.current = new RecaptchaVerifier(firebaseAuth, "recaptcha-container", { size: "invisible" });
+        phoneConfirmationRef.current = await signInWithPhoneNumber(firebaseAuth, phoneNumber, recaptchaVerifierRef.current);
+        setPhoneResendCountdown(30);
+        setToast("A new verification code was sent");
+        return;
+      }
       const { error } = await supabase.auth.resend({ type: "sms", phone: phoneNumber });
       if (error) throw error;
       setPhoneResendCountdown(30);
@@ -1142,13 +1379,14 @@ export default function Page() {
   };
   const saveAboutYou = async (event) => {
     event.preventDefault();
-    if (!user) return setToast("Sign in with Supabase to save your profile.");
+    if (!user) return setToast("Sign in to save your profile.");
     const fullName = profileName.trim();
     if (!fullName) return setToast("Enter your name to continue.");
     const answers = { full_name: fullName, exam_attempts: aboutExamCount, target_year: aboutTargetYear, onboarding_completed: true };
-    const { error } = await supabase.auth.updateUser({ data: answers });
-    if (error) return setToast(error.message);
-    setUser((current) => current ? { ...current, user_metadata: { ...current.user_metadata, ...answers } } : current);
+    try {
+      const { error } = await updateUserMetadata(answers);
+      if (error) return setToast(error.message);
+    } catch (error) { return setToast(error.message || "Could not save your profile."); }
     setToast("Your profile is ready");
     go("Home");
   };
@@ -1157,11 +1395,20 @@ export default function Page() {
     if (!user) return setToast("Sign in to update your account settings.");
     const fullName = profileName.trim();
     try {
-      const changes = { data: { ...user.user_metadata, ...(fullName ? { full_name: fullName } : {}) } };
-      if (accountEmail.trim() && accountEmail.trim() !== user.email) changes.email = accountEmail.trim();
-      if (accountPhone.trim() && accountPhone.trim() !== user.phone) changes.phone = accountPhone.trim();
-      const { error } = await supabase.auth.updateUser(changes);
-      if (error) throw error;
+      if (user.authProvider === "firebase") {
+        if (accountEmail.trim() && accountEmail.trim() !== user.email) throw new Error("To change the sign-in email, use the Firebase account verification flow.");
+        if (accountPhone.trim() && accountPhone.trim() !== user.phone) throw new Error("To change the sign-in phone, verify it again through Continue with Phone.");
+        if (fullName) {
+          const { error } = await updateUserMetadata({ full_name: fullName });
+          if (error) throw error;
+        }
+      } else {
+        const changes = { data: { ...user.user_metadata, ...(fullName ? { full_name: fullName } : {}) } };
+        if (accountEmail.trim() && accountEmail.trim() !== user.email) changes.email = accountEmail.trim();
+        if (accountPhone.trim() && accountPhone.trim() !== user.phone) changes.phone = accountPhone.trim();
+        const { error } = await supabase.auth.updateUser(changes);
+        if (error) throw error;
+      }
       setAccountEditing(false);
       setToast(accountEmail.trim() !== user.email ? "Check your email to confirm the new address." : accountPhone.trim() !== user.phone ? "A code was sent to verify your new phone number." : "Account settings updated.");
     } catch (error) { setToast(error.message || "Could not update account settings."); }
@@ -1194,8 +1441,10 @@ export default function Page() {
     if (!user) return go("Auth");
     const fullName = profileName.trim();
     if (!fullName) return setToast("Enter your name to save your profile");
-    const { error: authError } = await supabase.auth.updateUser({ data: { full_name: fullName } });
-    if (authError) return setToast(authError.message);
+    try {
+      const { error: authError } = await updateUserMetadata({ full_name: fullName });
+      if (authError) return setToast(authError.message);
+    } catch (error) { return setToast(error.message || "Could not update your name."); }
     const { error: profileError } = await supabase.from("profiles").update({ full_name: fullName, updated_at: new Date().toISOString() }).eq("id", user.id);
     if (profileError) return setToast("Name updated, but profile sync failed. Please try again.");
     setEditingProfile(false);
@@ -1214,7 +1463,7 @@ export default function Page() {
       const path = `${user.id}/${crypto.randomUUID()}.${extension}`;
       const { error: uploadError } = await supabase.storage.from("avatars").upload(path, file, { contentType: file.type, cacheControl: "3600", upsert: false });
       if (uploadError) throw uploadError;
-      const { error: profileError } = await supabase.auth.updateUser({ data: { avatar_path: path } });
+      const { error: profileError } = await updateUserMetadata({ avatar_path: path });
       if (profileError) throw profileError;
       const { data: signedPhoto, error: urlError } = await supabase.storage.from("avatars").createSignedUrl(path, 60 * 60);
       if (urlError) throw urlError;
@@ -1233,7 +1482,7 @@ export default function Page() {
     setTimerMinutes(next); setTimerDurationDraft(String(next)); setSeconds(next * 60);
     if (mode === "Pomodoro") {
       setFocusMinutes(next);
-      if (user) supabase.auth.updateUser({ data: { focus_duration_minutes: next } }).then(({ error }) => { if (error) setToast("Could not save timer settings to your account."); });
+      if (user) updateUserMetadata({ focus_duration_minutes: next }).then(({ error }) => { if (error) setToast("Could not save timer settings to your account."); }).catch(() => setToast("Could not save timer settings to your account."));
       else setToast("Sign in to save timer settings across devices.");
     }
   };
@@ -1271,7 +1520,7 @@ export default function Page() {
         <div className="welcome-feature-row">{[[figmaAsset.subject, "PYQs"], [figmaAsset.habits, "Habits"], [figmaAsset.notes, "Notes"], [figmaAsset.meditation, "Meditation"]].map(([asset, label], index) => <Fragment key={label}>{index === 1 && <i aria-hidden="true">+</i>}<span className={index === 0 ? "featured" : ""}><img src={asset} alt="" />{label}</span></Fragment>)}</div>
         <div className="welcome-actions"><strong>Get started</strong><button className="google-auth-button" onClick={signInWithGoogle}><span className="google-g" aria-hidden="true"><svg viewBox="0 0 48 48"><path fill="#4285F4" d="M43.6 24.5c0-1.4-.1-2.8-.4-4.1H24v7.8h11c-.5 2.6-2 4.9-4.3 6.4v5.3h7c4.1-3.8 6.5-9.3 6.5-15.4z"/><path fill="#34A853" d="M24 44c5.9 0 10.8-2 14.4-5.4l-7-5.3c-1.9 1.3-4.4 2-7.4 2-5.7 0-10.5-3.8-12.2-9H4.6v5.5C8.2 39.3 15.5 44 24 44z"/><path fill="#FBBC05" d="M11.8 26.3c-.4-1.3-.7-2.7-.7-4.3s.2-3 .7-4.3v-5.5H4.6C3.1 15.2 2.2 18.4 2.2 22s.9 6.8 2.4 9.8l7.2-5.5z"/><path fill="#EA4335" d="M24 10.7c3.2 0 6 1.1 8.2 3.2l6.1-6.1C34.8 4.4 29.9 2 24 2 15.5 2 8.2 6.7 4.6 13.8l7.2 5.5c1.7-5.2 6.5-8.6 12.2-8.6z"/></svg></span>Continue with Google</button><button className="phone-auth-button" onClick={() => go("Phone Auth")}><span aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6.6 10.8c1.4 2.8 3.8 5.2 6.6 6.6l2.2-2.2c.3-.3.7-.4 1.1-.3 1.2.4 2.5.6 3.8.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10 21 3 14 3 5c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.6.6 3.8.1.4 0 .8-.3 1.1z"/></svg></span>Continue with Phone</button><button className="welcome-email-link" onClick={() => { setAuthMode("signin"); setAuthError(""); setAuthNotice(""); go("Auth"); }}>Sign in or create an account with email</button><small>By continuing, you agree to our <button onClick={() => setToast("Terms and privacy details will be added by the client.")}>Terms &amp; Privacy Policy.</button></small></div>
       </section>}
-      {screen === "Phone Auth" && <Content className="phone-auth-page" title="Continue with phone" subtitle="We’ll text you a one-time verification code." back={() => go("Welcome")} character="happy"><form className="phone-auth-form" onSubmit={sendPhoneCode}><label htmlFor="phone-number">Phone number</label><div className={`phone-number-field ${phoneNumber.replace(/^\+91/, "").length === 10 ? "valid" : ""}`}><span>+91</span><input id="phone-number" type="tel" inputMode="numeric" autoComplete="tel-national" value={phoneNumber.replace(/^\+91/, "").replace(/^(\d{5})(\d{5})$/, "$1 $2")} onChange={(event) => { let digits = event.target.value.replace(/\D/g, ""); if (digits.startsWith("0091") && digits.length > 10) digits = digits.slice(4); else if (digits.startsWith("91") && digits.length > 10) digits = digits.slice(2); else if (digits.startsWith("0") && digits.length === 11) digits = digits.slice(1); setPhoneNumber(`+91${digits.slice(0, 10)}`); }} placeholder="Enter 10-digit phone number" required /></div><small>123456 works only for numbers added to Supabase Auth test phone numbers.</small><button className="primary-button full-button" type="submit" disabled={phoneBusy || phoneNumber.replace(/^\+91/, "").length !== 10}>{phoneBusy ? "Sending code…" : "Send verification code"}</button><small className="phone-security-note"><span aria-hidden="true">♢</span> Your number is used to secure your account.</small></form></Content>}
+      {screen === "Phone Auth" && <Content className="phone-auth-page" title="Continue with phone" subtitle="We’ll text you a one-time verification code." back={() => go("Welcome")} character="happy"><form className="phone-auth-form" onSubmit={sendPhoneCode}><label htmlFor="phone-number">Phone number</label><div className={`phone-number-field ${phoneNumber.replace(/^\+91/, "").length === 10 ? "valid" : ""}`}><span>+91</span><input id="phone-number" type="tel" inputMode="numeric" autoComplete="tel-national" value={phoneNumber.replace(/^\+91/, "").replace(/^(\d{5})(\d{5})$/, "$1 $2")} onChange={(event) => { let digits = event.target.value.replace(/\D/g, ""); if (digits.startsWith("0091") && digits.length > 10) digits = digits.slice(4); else if (digits.startsWith("91") && digits.length > 10) digits = digits.slice(2); else if (digits.startsWith("0") && digits.length === 11) digits = digits.slice(1); setPhoneNumber(`+91${digits.slice(0, 10)}`); }} placeholder="Enter 10-digit phone number" required /></div><div id="recaptcha-container" /><small>Firebase will text a verification code. Test numbers work only when configured in Firebase Authentication.</small><button className="primary-button full-button" type="submit" disabled={phoneBusy || phoneNumber.replace(/^\+91/, "").length !== 10}>{phoneBusy ? "Sending code…" : "Send verification code"}</button><small className="phone-security-note"><span aria-hidden="true">♢</span> Your number is used to secure your account.</small></form></Content>}
       {screen === "Verify Phone" && <Content className="phone-auth-page verify-phone-page" title={phoneBusy ? "Verifying your number" : "Verify your number"} subtitle={phoneBusy ? "Securely checking your one-time code." : `Enter the 6-digit code sent to ${formatIndianPhone(phoneNumber)}.`} back={() => go("Phone Auth")}><form className="phone-auth-form verify-phone-form" onSubmit={verifyPhoneCode}><label htmlFor="phone-code">Verification code</label><div className={`otp-code-boxes ${phoneOtpError ? "error" : ""}`} onClick={() => document.getElementById("phone-code")?.focus()}><input id="phone-code" type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={phoneCode} onChange={(event) => { setPhoneCode(event.target.value.replace(/\D/g, "").slice(0, 6)); setPhoneOtpError(false); }} aria-label="Six-digit verification code" disabled={phoneBusy} /><div aria-hidden="true">{Array.from({length:6},(_,index)=><span key={index} className={index === phoneCode.length && !phoneOtpError ? "active" : ""}>{phoneCode[index] || ""}</span>)}</div></div>{phoneOtpError && <small className="otp-error" role="alert">{phoneOtpErrorMessage}</small>}<button className="primary-button full-button" type="submit" disabled={phoneBusy || phoneCode.length !== 6}>{phoneBusy && <span className="auth-spinner" aria-hidden="true" />}{phoneBusy ? "Verifying…" : "Verify & Continue"}</button></form><button className="wrong-number-link" onClick={() => { setPhoneCode(""); setPhoneOtpError(false); setPhoneOtpErrorMessage("Incorrect code. Check the code and try again."); go("Phone Auth"); }}>Wrong number? <span>Change phone number</span></button><button className="resend-code-link" onClick={resendPhoneCode} disabled={phoneResendCountdown > 0 || phoneBusy}>{phoneResendCountdown > 0 ? `Resend code in ${formatTime(phoneResendCountdown)}` : "Didn’t get the code? Resend OTP"}</button></Content>}
       {screen === "Phone Verified" && <section className="phone-verified-page"><div className="phone-verified-content"><div className="phone-verified-mascot" aria-hidden="true"><Lottie src="/mascot-lottie/cloudy-happy-jump.json" autoplay loop /></div><h1>Phone verified!</h1><p>Your phone number has been verified successfully.</p></div><button className="primary-button full-button" onClick={() => go(hasCompletedOnboarding(user) ? "Home" : "About You")}>Continue</button></section>}
       {screen === "Home" && <header className="topbar">
@@ -1449,11 +1698,11 @@ export default function Page() {
 
       {screen === "About You" && <Content className="about-you-page" title="A little about you" subtitle="We’ll tailor your UPSC preparation to your goals." back={() => go("Welcome")} character><form className="about-you-form" onSubmit={saveAboutYou}><label className="about-name-field" htmlFor="about-name">Your name<span className="about-input-wrap"><img src={figmaAsset.profile} alt="" /><input id="about-name" value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="Enter your name" maxLength={80} required /></span></label><fieldset><legend>How many attempts have you taken?</legend><div className="about-choice-row">{["0", "1", "2", "3+"].map((value) => <button type="button" key={value} className={aboutExamCount === value ? "selected" : ""} onClick={() => setAboutExamCount(value)}>{value}</button>)}</div></fieldset><label className="about-year-field">Target exam year<span className="about-input-wrap"><span aria-hidden="true">▣</span><select value={aboutTargetYear} onChange={(event) => setAboutTargetYear(event.target.value)}><option value="">Select your target year</option>{availableYears.slice(0, 10).map((year) => <option key={year}>{year}</option>)}</select></span></label><div className="about-tip"><span>✦</span><p><b>Made for your preparation</b><small>Your selections help personalize your study recommendations and progress.</small></p></div><button className="primary-button full-button" type="submit">Start My Preparation</button></form></Content>}
       {screen === "Refer & Earn" && <Content className="referral-page" title="Refer & Earn" subtitle="Share the benefits. Earn more study time." back={() => go("My Profile")}><div className="referral-hero"><span className="referral-gift" aria-hidden="true">🎁</span><div className="referral-offers"><article><small>GIVE 20% OFF</small><b>Your friend<br /><em>20% off</em><br />their yearly plan</b></article><article><small>GET REWARDED</small><b>You receive<br /><em>1 month</em><br />per successful referral</b></article></div><p>Your reward applies after your friend subscribes.</p></div><div className="referral-code-card"><div><small>Your referral code</small><b>{referralCode}</b></div><button onClick={copyReferralCode}><span aria-hidden="true">▢</span> Copy</button></div><button className="primary-button full-button referral-share" onClick={shareReferral}><span aria-hidden="true">↗</span> Invite Friends Now</button><section className="referral-steps"><h2>How it works</h2>{[["↗", "Invite your friends", "Share your unique code via WhatsApp or any other platform."], ["♙", "Your friend subscribes", "They get 20% off on a yearly plan if eligible."], ["✦", "You get rewarded", "You receive 1 extra month for every successful referral."]].map(([symbol, title, body]) => <div key={title}><span>{symbol}</span><p><b>{title}</b><br />{body}</p></div>)}</section><div className="referral-results"><div><span>✧</span><small>Successful Referrals</small><b>0</b></div><i /><div><span>♛</span><small>Months Earned</small><b>0</b></div></div></Content>}
-      {screen === "Account Settings" && <Content className="account-settings-page" title="Account Settings" subtitle="Your information and security" back={() => go("My Profile")} character><form onSubmit={saveAccountSettings}><h2 className="account-section-label">PERSONAL INFORMATION</h2><div className="account-info-card"><label><span>♙</span><small>Name<input disabled={!accountEditing} value={profileName} onChange={(event) => setProfileName(event.target.value)} /></small><button type="button" aria-label="Edit name" onClick={() => setAccountEditing(true)}>✎</button></label><label><span>✉</span><small>Email<input disabled={!accountEditing} type="email" value={accountEmail} onChange={(event) => setAccountEmail(event.target.value)} placeholder={user?.phone && !user?.email ? "Add an email address" : ""} /></small><button type="button" aria-label="Edit email" onClick={() => setAccountEditing(true)}>✎</button></label><label><span>♧</span><small>Phone<input disabled={!accountEditing} type="tel" value={accountPhone} onChange={(event) => setAccountPhone(event.target.value)} placeholder="Add a phone number" /></small><button type="button" aria-label="Edit phone number" onClick={() => setAccountEditing(true)}>✎</button></label></div>{accountEditing && <button className="primary-button full-button" type="submit">Save changes</button>}</form><h2 className="account-section-label">ACCOUNT ACTIONS</h2><div className="account-action-card"><button onClick={async () => { const { error } = await supabase.auth.signOut(); if (error) return setToast(error.message); go("Welcome"); }}><span>⇥</span><b>Sign out</b><i>›</i></button><button onClick={() => setToast("Privacy and security settings will be available here.")}><span>♢</span><b>Privacy and security</b><i>›</i></button></div><h2 className="account-section-label danger-label">DANGER ZONE</h2><button className="delete-account-card" onClick={() => setToast("Contact support to request account deletion.")}><span>♜</span><span><b>Delete account</b><small>Permanently remove your account and data</small></span><i>›</i></button></Content>}
-      {screen === "My Profile" && <Content className="profile-page" title="My Profile" subtitle="Manage Profile" back={() => go("Home")}><div className="profile-card">{avatarUrl ? <img className="profile-photo" src={avatarUrl} alt={`${displayName || "Your"} profile photo`} /> : <span className="profile-photo profile-photo-placeholder" aria-hidden="true"><img src={figmaAsset.profile} alt="" /></span>}<h2>{displayName || "Enter your name"}</h2><p>{user?.email || user?.phone || "Email not added"}</p>{user?.phone && !user?.email && <button type="button" className="profile-email-action" onClick={() => { setAccountEmail(""); setAccountPhone(user.phone); setAccountEditing(true); go("Account Settings"); }}>Add email address</button>}<small className="member-since">{user?.created_at ? `Member since ${new Date(user.created_at).toLocaleDateString("en-IN", { month: "short", year: "numeric" })}` : ""}</small>{user ? <><button type="button" className="outline-button avatar-upload-button" onClick={() => avatarInputRef.current?.click()} disabled={avatarBusy}>{avatarBusy ? "Uploading photo…" : "Change profile photo"}</button><input ref={avatarInputRef} className="avatar-file-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={uploadAvatar} disabled={avatarBusy} aria-label="Choose a profile photo" /><button className="outline-button" onClick={() => setEditingProfile((value) => !value)}>{editingProfile ? "Cancel" : "Edit profile"}</button></> : <button className="outline-button" onClick={() => go("Welcome")}>Sign in to change photo</button>}{editingProfile && <form className="auth-form" onSubmit={saveProfile}><label htmlFor="profile-name">Full name</label><input id="profile-name" value={profileName} onChange={(event) => setProfileName(event.target.value)} maxLength={80} required /><button className="primary-button full-button" type="submit">Save profile <span>→</span></button></form>}</div><div className="profile-row"><span>✉</span><div><small>{user?.email ? "EMAIL" : user?.phone ? "PHONE" : "CONTACT"}</small><b>{user?.email || user?.phone || (user ? "Email not added" : "Not signed in")}</b></div>{user && <span>✓</span>}</div><div className="profile-row"><span>◷</span><div><small>MEMBERSHIP</small><b>Free account</b></div><button className="text-action" onClick={() => go("Subscription")}>View plans</button></div><div className="section-heading"><h3>Account Settings</h3></div>{[["♙", "Account Settings", "Manage your personal information"], ["♧", "Refer & Earn", "Invite your friends and earn rewards"], ["▣", "Terms & Policy", "Read our terms and privacy policy"], ["?", "Help & Support", "Get help and contact support"]].map(([glyph, item, subtitle]) => <button className="choice-row" key={item} onClick={() => item === "Account Settings" || item === "Refer & Earn" ? go(item) : setToast(`${item} will be available here.`)}><span className="profile-setting-icon">{glyph}</span><span><b>{item}</b><small>{subtitle}</small></span><span className="chevron">›</span></button>)}{user ? <button className="quiet-link" onClick={async () => { const { error } = await supabase.auth.signOut(); if (error) return setToast(error.message); setProfileName(""); setAccountEmail(""); resetNavigation("Welcome"); }}>Sign out</button> : <button className="quiet-link" onClick={() => go("Welcome")}>Sign in or create account</button>}</Content>}
+      {screen === "Account Settings" && <Content className="account-settings-page" title="Account Settings" subtitle="Your information and security" back={() => go("My Profile")} character><form onSubmit={saveAccountSettings}><h2 className="account-section-label">PERSONAL INFORMATION</h2><div className="account-info-card"><label><span>♙</span><small>Name<input disabled={!accountEditing} value={profileName} onChange={(event) => setProfileName(event.target.value)} /></small><button type="button" aria-label="Edit name" onClick={() => setAccountEditing(true)}>✎</button></label><label><span>✉</span><small>Email<input disabled={!accountEditing} type="email" value={accountEmail} onChange={(event) => setAccountEmail(event.target.value)} placeholder={user?.phone && !user?.email ? "Add an email address" : ""} /></small><button type="button" aria-label="Edit email" onClick={() => setAccountEditing(true)}>✎</button></label><label><span>♧</span><small>Phone<input disabled={!accountEditing} type="tel" value={accountPhone} onChange={(event) => setAccountPhone(event.target.value)} placeholder="Add a phone number" /></small><button type="button" aria-label="Edit phone number" onClick={() => setAccountEditing(true)}>✎</button></label></div>{accountEditing && <button className="primary-button full-button" type="submit">Save changes</button>}</form><h2 className="account-section-label">ACCOUNT ACTIONS</h2><div className="account-action-card"><button onClick={signOutApp}><span>⇥</span><b>Sign out</b><i>›</i></button><button onClick={() => setToast("Privacy and security settings will be available here.")}><span>♢</span><b>Privacy and security</b><i>›</i></button></div><h2 className="account-section-label danger-label">DANGER ZONE</h2><button className="delete-account-card" onClick={() => setToast("Contact support to request account deletion.")}><span>♜</span><span><b>Delete account</b><small>Permanently remove your account and data</small></span><i>›</i></button></Content>}
+      {screen === "My Profile" && <Content className="profile-page" title="My Profile" subtitle="Manage Profile" back={() => go("Home")}><div className="profile-card">{avatarUrl ? <img className="profile-photo" src={avatarUrl} alt={`${displayName || "Your"} profile photo`} /> : <span className="profile-photo profile-photo-placeholder" aria-hidden="true"><img src={figmaAsset.profile} alt="" /></span>}<h2>{displayName || "Enter your name"}</h2><p>{user?.email || user?.phone || "Email not added"}</p>{user?.phone && !user?.email && <button type="button" className="profile-email-action" onClick={() => { setAccountEmail(""); setAccountPhone(user.phone); setAccountEditing(true); go("Account Settings"); }}>Add email address</button>}<small className="member-since">{user?.created_at ? `Member since ${new Date(user.created_at).toLocaleDateString("en-IN", { month: "short", year: "numeric" })}` : ""}</small>{user ? <><button type="button" className="outline-button avatar-upload-button" onClick={() => avatarInputRef.current?.click()} disabled={avatarBusy}>{avatarBusy ? "Uploading photo…" : "Change profile photo"}</button><input ref={avatarInputRef} className="avatar-file-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={uploadAvatar} disabled={avatarBusy} aria-label="Choose a profile photo" /><button className="outline-button" onClick={() => setEditingProfile((value) => !value)}>{editingProfile ? "Cancel" : "Edit profile"}</button></> : <button className="outline-button" onClick={() => go("Welcome")}>Sign in to change photo</button>}{editingProfile && <form className="auth-form" onSubmit={saveProfile}><label htmlFor="profile-name">Full name</label><input id="profile-name" value={profileName} onChange={(event) => setProfileName(event.target.value)} maxLength={80} required /><button className="primary-button full-button" type="submit">Save profile <span>→</span></button></form>}</div><div className="profile-row"><span>✉</span><div><small>{user?.email ? "EMAIL" : user?.phone ? "PHONE" : "CONTACT"}</small><b>{user?.email || user?.phone || (user ? "Email not added" : "Not signed in")}</b></div>{user && <span>✓</span>}</div><div className="profile-row"><span>◷</span><div><small>MEMBERSHIP</small><b>Free account</b></div><button className="text-action" onClick={() => go("Subscription")}>View plans</button></div><div className="section-heading"><h3>Account Settings</h3></div>{[["♙", "Account Settings", "Manage your personal information"], ["♧", "Refer & Earn", "Invite your friends and earn rewards"], ["▣", "Terms & Policy", "Read our terms and privacy policy"], ["?", "Help & Support", "Get help and contact support"]].map(([glyph, item, subtitle]) => <button className="choice-row" key={item} onClick={() => item === "Account Settings" || item === "Refer & Earn" ? go(item) : setToast(`${item} will be available here.`)}><span className="profile-setting-icon">{glyph}</span><span><b>{item}</b><small>{subtitle}</small></span><span className="chevron">›</span></button>)}{user ? <button className="quiet-link" onClick={signOutApp}>Sign out</button> : <button className="quiet-link" onClick={() => go("Welcome")}>Sign in or create account</button>}</Content>}
 
-      {screen === "Auth" && <Content title={authMode === "signup" ? "Create your account" : "Welcome to PYQ Cloud"} subtitle={authMode === "signup" ? "Sign up to save your progress and study data." : "Sign in to keep your learning in sync."} back={() => go("Welcome")}><div className="auth-card"><div className="auth-symbol">☁</div><h2>{authMode === "signup" ? "Start your preparation." : "Make every session count."}</h2><p>{authMode === "signup" ? "Create an account to keep your learning in sync." : "Save your progress and pick up wherever you left off."}</p>{authError && <p className="auth-feedback error" role="alert">{authError}</p>}{authNotice && <p className="auth-feedback" role="status">{authNotice}</p>}<form className="auth-form" onSubmit={submitAuth}><label htmlFor="email">Email address</label><input id="email" name="email" type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="you@example.com" required /><label htmlFor="password">Password</label><input id="password" name="password" type="password" autoComplete={authMode === "signup" ? "new-password" : "current-password"} minLength="8" placeholder="At least 8 characters" required />{authMode === "signup" && <><label htmlFor="confirm-password">Confirm password</label><input id="confirm-password" name="confirmPassword" type="password" autoComplete="new-password" minLength="8" placeholder="Enter your password again" required /></>}<button className="primary-button full-button" type="submit" disabled={authBusy}>{authBusy ? "Please wait…" : authMode === "signup" ? "Create account" : "Sign in"} <span>→</span></button></form>{authMode === "signin" && <button className="auth-inline-link" onClick={() => { setAuthError(""); setAuthNotice(""); go("Reset Password"); }}>Forgot password?</button>}<button className="quiet-link" onClick={() => { setAuthMode((value) => value === "signup" ? "signin" : "signup"); setAuthError(""); setAuthNotice(""); }}>{authMode === "signup" ? "Already have an account? Sign in" : "New here? Create an account"}</button><small className="auth-note">Your account and study data sync securely through Supabase.</small></div></Content>}
-      {screen === "Auth Confirmation" && <Content title="Check your email" subtitle="One quick step to activate your account." back={() => go("Auth")}><div className="auth-card"><div className="auth-symbol">✉</div><h2>Confirm your email</h2><p className="auth-feedback" role="status">{authNotice || `We sent a confirmation link to ${authEmail}. Open it to activate your account, then come back here to sign in.`}</p>{authError && <p className="auth-feedback error" role="alert">{authError}</p>}<button className="primary-button full-button" onClick={() => { setAuthMode("signin"); setAuthError(""); setAuthNotice(""); go("Auth"); }}>Continue to sign in <span>→</span></button><button className="quiet-link" onClick={resendSignupConfirmation} disabled={authBusy}>{authBusy ? "Sending…" : "Resend confirmation email"}</button></div></Content>}
+      {screen === "Auth" && <Content title={authMode === "signup" ? "Create your account" : "Welcome to PYQ Cloud"} subtitle={authMode === "signup" ? "Sign up to save your progress and study data." : "Sign in to keep your learning in sync."} back={() => go("Welcome")}><div className="auth-card"><div className="auth-symbol">☁</div><h2>{authMode === "signup" ? "Start your preparation." : "Make every session count."}</h2><p>{authMode === "signup" ? "Create an account to keep your learning in sync." : "Save your progress and pick up wherever you left off."}</p>{authError && <p className="auth-feedback error" role="alert">{authError}</p>}{authNotice && <p className="auth-feedback" role="status">{authNotice}</p>}<form className="auth-form" onSubmit={submitAuth}><label htmlFor="email">Email address</label><input id="email" name="email" type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="you@example.com" required /><label htmlFor="password">Password</label><input id="password" name="password" type="password" autoComplete={authMode === "signup" ? "new-password" : "current-password"} minLength="8" placeholder="At least 8 characters" required />{authMode === "signup" && <><label htmlFor="confirm-password">Confirm password</label><input id="confirm-password" name="confirmPassword" type="password" autoComplete="new-password" minLength="8" placeholder="Enter your password again" required /></>}<button className="primary-button full-button" type="submit" disabled={authBusy}>{authBusy ? "Please wait…" : authMode === "signup" ? "Create account" : "Sign in"} <span>→</span></button></form>{authMode === "signin" && <button className="auth-inline-link" onClick={() => { setAuthError(""); setAuthNotice(""); go("Reset Password"); }}>Forgot password?</button>}<button className="quiet-link" onClick={() => { setAuthMode((value) => value === "signup" ? "signin" : "signup"); setAuthError(""); setAuthNotice(""); }}>{authMode === "signup" ? "Already have an account? Sign in" : "New here? Create an account"}</button><small className="auth-note">Sign-in is secured by Firebase. Your study data syncs with Supabase.</small></div></Content>}
+      {screen === "Auth Confirmation" && <Content title="Check your email" subtitle="One quick step to activate your account." back={() => go("Auth")}><div className="auth-card"><div className="auth-symbol">✉</div><h2>Confirm your email</h2><p className="auth-feedback" role="status">{authNotice || `We sent a confirmation link to ${authEmail}. Open it to activate your account, then come back here.`}</p>{authError && <p className="auth-feedback error" role="alert">{authError}</p>}<button className="primary-button full-button" onClick={confirmFirebaseEmail} disabled={authBusy}>{authBusy ? "Checking…" : "I’ve verified my email"} <span>→</span></button><button className="quiet-link" onClick={resendSignupConfirmation} disabled={authBusy}>{authBusy ? "Sending…" : "Resend confirmation email"}</button><button className="quiet-link" onClick={async () => { if (getFirebaseAuth().currentUser) await firebaseSignOut(getFirebaseAuth()); setAuthMode("signin"); setAuthError(""); setAuthNotice(""); go("Auth"); }}>Use a different account</button></div></Content>}
       {screen === "Reset Password" && <Content title="Reset your password" subtitle={user ? "Choose a new password for your account." : "Enter your account email and we’ll send a secure reset link."} back={() => go("Auth")}><div className="auth-card"><div className="auth-symbol">☁</div><h2>{user ? "Choose a new password." : "Get back into your account."}</h2>{authError && <p className="auth-feedback error" role="alert">{authError}</p>}{user ? <form className="auth-form" onSubmit={updatePassword}><label htmlFor="new-password">New password</label><input id="new-password" name="newPassword" type="password" autoComplete="new-password" minLength="8" placeholder="At least 8 characters" required /><label htmlFor="confirm-new-password">Confirm new password</label><input id="confirm-new-password" name="confirmPassword" type="password" autoComplete="new-password" minLength="8" placeholder="Enter it again" required /><button className="primary-button full-button" type="submit" disabled={authBusy}>{authBusy ? "Updating…" : "Update password"} <span>→</span></button></form> : <form className="auth-form" onSubmit={sendPasswordReset}><label htmlFor="reset-email">Email address</label><input id="reset-email" type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="you@example.com" required /><button className="primary-button full-button" type="submit" disabled={authBusy}>{authBusy ? "Sending…" : "Send reset link"} <span>→</span></button></form>}</div></Content>}
       {screen === "Reset Email Sent" && <Content title="Check your email" subtitle="Use the secure link to set a new password." back={() => go("Auth")}><div className="auth-card"><div className="auth-symbol">✉</div><h2>Reset link sent</h2><p className="auth-feedback" role="status">{authNotice}</p><button className="primary-button full-button" onClick={() => go("Auth")}>Back to sign in <span>→</span></button><button className="quiet-link" onClick={() => go("Reset Password")}>Try another email</button></div></Content>}
 
