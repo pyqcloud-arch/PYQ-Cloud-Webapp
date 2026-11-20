@@ -299,6 +299,7 @@ export default function Page() {
   const [installPrompt, setInstallPrompt] = useState(null);
   const [isInstalledApp, setIsInstalledApp] = useState(false);
   const [musicSettings, setMusicSettings] = useState({ enabled: false, trackUrl: "", volume: 0.35 });
+  const [homeNote, setHomeNote] = useState({ heading: "A note for you", subtitle: "Today is a new day!", text: "Every question that you practice brings you one step closer to your dream." });
   const [musicPlaying, setMusicPlaying] = useState(false);
   const [showMusicPicker, setShowMusicPicker] = useState(false);
   const [showMusicControls, setShowMusicControls] = useState(false);
@@ -685,6 +686,7 @@ export default function Page() {
     const onInstall = (event) => { event.preventDefault(); setInstallPrompt(event); };
     const onInstalled = () => { setInstallPrompt(null); setIsInstalledApp(true); setToast("PYQ Cloud was added to your home screen."); };
     fetch("/api/settings/music", { cache: "no-store" }).then((result) => result.ok ? result.json() : null).then((settings) => { if (settings) setMusicSettings(settings); }).catch(() => {});
+    fetch("/api/settings/home-note", { cache: "no-store" }).then((result) => result.ok ? result.json() : null).then((settings) => { if (settings?.heading && settings?.text) setHomeNote(settings); }).catch(() => {});
     const onDisplayModeChange = (event) => setIsInstalledApp(event.matches || window.navigator.standalone === true);
     const displayMode = window.matchMedia("(display-mode: standalone)");
     displayMode.addEventListener?.("change", onDisplayModeChange);
@@ -1595,7 +1597,7 @@ export default function Page() {
         </div>
         <aside className="home-note-card" aria-label="A note for you">
           <span className="home-note-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M9 18h6m-5 3h4m-2-20a7 7 0 0 0-4.7 12.2c.9.8 1.4 1.5 1.6 2.8h6.2c.2-1.3.7-2 1.6-2.8A7 7 0 0 0 12 1Z" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
-          <span className="home-note-copy"><strong className="home-note-title">A note for you{firstName ? <>, <em>{firstName}</em></> : ""}</strong><small>Today is a new day!</small><small className="home-note-message">Every question that you practice brings you one step closer to your dream.</small></span>
+          <span className="home-note-copy"><strong className="home-note-title">{homeNote.heading}{firstName ? <>, <em>{firstName}</em></> : ""}</strong><small>{homeNote.subtitle}</small><small className="home-note-message">{homeNote.text}</small></span>
         </aside>
         <button className="goal-card" onClick={(event) => go(event.target.closest(".goal-stats > span:first-child") ? "Streaks with Cloudy" : "Analytics & Streak")}>
           <div className="goal-title"><span className="goal-icon"><img src={figmaAsset.goal} alt="" /></span><span>Daily Goal</span><b>{Math.min(analytics.today, 20)}/20 <small>Questions</small></b><span className="progress-ring" style={{ "--goal-progress": `${Math.min(100, Math.round(analytics.today / 20 * 100))}%` }}><strong>{Math.min(100, Math.round(analytics.today / 20 * 100))}%</strong></span></div>

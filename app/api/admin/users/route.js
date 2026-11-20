@@ -12,28 +12,42 @@ export async function GET(request) {
   const page = Math.max(1, Number.parseInt(searchParams.get("page") || "1", 10) || 1);
   const perPage = Math.max(1, Math.min(100, Number.parseInt(searchParams.get("perPage") || "25", 10) || 25));
   try {
-    const { data, error } = await auth.database.auth.admin.listUsers({ page, perPage });
-    if (error) return adminResponse({ error: "Could not load registered accounts." }, 500);
-    const users = data?.users || [];
-    const ids = users.map((user) => user.id);
-    const { data: profiles, error: profilesError } = ids.length
-      ? await auth.database.from("profiles").select("id, full_name, role").in("id", ids)
-      : { data: [], error: null };
-    if (profilesError) return adminResponse({ error: "Could not load profile details." }, 500);
-    const profileMap = new Map((profiles || []).map((profile) => [profile.id, profile]));
     const search = (searchParams.get("q") || "").trim().toLowerCase();
-    const rows = users.map((user) => ({
-      id: user.id,
-      email: user.email || "",
-      phone: user.phone || "",
-      fullName: profileMap.get(user.id)?.full_name || user.user_metadata?.full_name || user.user_metadata?.name || "",
-      role: profileMap.get(user.id)?.role || "user",
-      createdAt: user.created_at,
-      lastSignInAt: user.last_sign_in_at || null,
-      confirmed: Boolean(user.email_confirmed_at || user.phone_confirmed_at),
-      isAdmin: profileMap.get(user.id)?.role === "admin",
-    })).filter((user) => !search || `${user.fullName} ${user.email} ${user.phone}`.toLowerCase().includes(search));
-    return adminResponse({ users: rows, page, perPage, total: data?.total || null, hasMore: users.length === perPage });
+    let profiles = [];
+    let total = 0;
+    if (!search) {
+      const { data, error, count } = await auth.database.from("profiles")
+        .select("id, email, phone, full_name, user_metadata, role, created_at", { count: "exact" })
+        .order("created_at", { ascending: false })
+        .range((page - 1) * perPage, page * perPage - 1);
+      if (error) return adminResponse({ error: "Could not load user profiles." }, 500);
+      profiles = data || [];
+      total = count || 0;
+    } else {
+      for (let offset = 0; ; offset += 500) {
+        const { data, error } = await auth.database.from("profiles")
+          .select("id, email, phone, full_name, user_metadata, role, created_at")
+          .order("created_at", { ascending: false })
+          .range(offset, offset + 499);
+        if (error) return adminResponse({ error: "Could not search user profiles." }, 500);
+        const batch = data || [];
+        profiles.push(...batch);
+        if (batch.length < 500) break;
+      }
+      profiles = profiles.filter((profile) => `${profile.full_name || profile.user_metadata?.full_name || profile.user_metadata?.name || ""} ${profile.email || ""} ${profile.phone || ""}`.toLowerCase().includes(search));
+      total = profiles.length;
+      profiles = profiles.slice((page - 1) * perPage, page * perPage);
+    }
+    const rows = profiles.map((profile) => ({
+      id: profile.id,
+      email: profile.email || "",
+      phone: profile.phone || "",
+      fullName: profile.full_name || profile.user_metadata?.full_name || profile.user_metadata?.name || "",
+      role: profile.role === "admin" ? "admin" : "user",
+      createdAt: profile.created_at || null,
+      isAdmin: profile.role === "admin",
+    }));
+    return adminResponse({ users: rows, page, perPage, total, hasMore: page * perPage < total });
   } catch { return adminResponse({ error: "Could not load registered accounts." }, 500); }
 }
 
@@ -44,17 +58,34 @@ export async function PATCH(request) {
   if (!uuidPattern.test(id)) return adminResponse({ error: "Choose a valid user profile." }, 400);
   let body;
   try { body = await request.json(); } catch { return adminResponse({ error: "Provide valid JSON." }, 400); }
-  const fullName = cleanName(body?.full_name);
-  if (!fullName) return adminResponse({ error: "A user's name cannot be empty." }, 400);
-  const { data: found, error: findError } = await auth.database.auth.admin.getUserById(id);
-  if (findError || !found?.user) return adminResponse({ error: "This user account was not found." }, 404);
-  const { data, error } = await auth.database.auth.admin.updateUserById(id, {
-    user_metadata: { ...(found.user.user_metadata || {}), full_name: fullName },
-  });
-  if (error) return adminResponse({ error: "Could not update this account profile." }, 500);
-  const { error: profileError } = await auth.database.from("profiles").upsert({ id, email: data.user.email || null, full_name: fullName, updated_at: new Date().toISOString() }, { onConflict: "id" });
-  if (profileError) return adminResponse({ error: "The account name changed, but profile sync failed." }, 500);
-  return adminResponse({ updated: true, user: { id, fullName } });
+  const fullName = body?.full_name === undefined ? undefined : cleanName(body.full_name);
+  const role = body?.role;
+  if (fullName !== undefined && !fullName) return adminResponse({ error: "A user's name cannot be empty." }, 400);
+  if (role !== undefined && !["admin", "user"].includes(role)) return adminResponse({ error: "Choose either the admin or user role." }, 400);
+  if (fullName === undefined && role === undefined) return adminResponse({ error: "Choose a profile change to save." }, 400);
+  const { data: target, error: targetError } = await auth.database.from("profiles").select("id, role, email").eq("id", id).maybeSingle();
+  if (targetError) return adminResponse({ error: "Could not verify this profile." }, 500);
+  if (!target) return adminResponse({ error: "This user profile was not found." }, 404);
+  if (target.role === "admin" && role === "user") {
+    const { count, error } = await auth.database.from("profiles").select("id", { count: "exact", head: true }).eq("role", "admin");
+    if (error) return adminResponse({ error: "Could not verify the remaining admin accounts." }, 500);
+    if ((count || 0) <= 1) return adminResponse({ error: "Keep at least one admin account." }, 409);
+  }
+  const updates = { updated_at: new Date().toISOString() };
+  if (fullName !== undefined) updates.full_name = fullName;
+  if (role !== undefined) updates.role = role;
+  const { error: profileError } = await auth.database.from("profiles").update(updates).eq("id", id);
+  if (profileError) return adminResponse({ error: "Could not update the Supabase profile." }, 500);
+  if (fullName !== undefined) {
+    const { data: found } = await auth.database.auth.admin.getUserById(id);
+    if (found?.user) {
+      const { error } = await auth.database.auth.admin.updateUserById(id, {
+        user_metadata: { ...(found.user.user_metadata || {}), full_name: fullName },
+      });
+      if (error) return adminResponse({ error: "The profile was updated, but auth name sync failed." }, 500);
+    }
+  }
+  return adminResponse({ updated: true, user: { id, ...(fullName !== undefined ? { fullName } : {}), ...(role !== undefined ? { role } : {}) } });
 }
 
 export async function DELETE(request) {

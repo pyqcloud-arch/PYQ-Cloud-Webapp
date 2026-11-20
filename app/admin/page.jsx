@@ -66,6 +66,8 @@ export default function AdminPage() {
   const [appliedFilters, setAppliedFilters] = useState({ q: "", subject: "", year: "" });
   const [musicSettings, setMusicSettings] = useState({ enabled: false, trackUrl: "", volume: 0.28 });
   const [musicBusy, setMusicBusy] = useState(false);
+  const [homeNote, setHomeNote] = useState({ heading: "A note for you", subtitle: "Today is a new day!", text: "Every question that you practice brings you one step closer to your dream." });
+  const [homeNoteBusy, setHomeNoteBusy] = useState(false);
   const [catalog, setCatalog] = useState({ subjects: [], years: [] });
   const [catalogBusy, setCatalogBusy] = useState(false);
   const [catalogError, setCatalogError] = useState("");
@@ -140,6 +142,11 @@ export default function AdminPage() {
     finally { setCatalogBusy(false); }
   }, [request]);
 
+  const loadHomeNote = useCallback(async () => {
+    try { setHomeNote(await request("/api/admin/settings/home-note")); }
+    catch (error) { setNotice(error.message); }
+  }, [request]);
+
   const loadUsers = useCallback(async (requestedPage = usersPage, query = userSearch) => {
     setUsersBusy(true);
     setUsersError("");
@@ -192,6 +199,30 @@ export default function AdminPage() {
     finally { setUsersBusy(false); }
   };
 
+  const saveUserRole = async (user, role) => {
+    if (!user || !["admin", "user"].includes(role) || role === user.role) return;
+    const isCurrentAdmin = Boolean((session?.user?.email && session.user.email === user.email) || (session?.user?.phone && session.user.phone === user.phone));
+    setUsersBusy(true); setUsersError("");
+    try {
+      await request(`/api/admin/users?id=${encodeURIComponent(user.id)}`, { method: "PATCH", body: JSON.stringify({ role }) });
+      setNotice(`${user.fullName || user.email || user.phone || "Account"} is now ${role === "admin" ? "an admin" : "a user"}.`);
+      if (isCurrentAdmin && role === "user") { window.location.assign("/"); return; }
+      await loadUsers(usersPage, userSearch);
+    } catch (error) { setUsersError(error.message); }
+    finally { setUsersBusy(false); }
+  };
+
+  const saveHomeNote = async (event) => {
+    event.preventDefault();
+    setHomeNoteBusy(true);
+    try {
+      const saved = await request("/api/admin/settings/home-note", { method: "PUT", body: JSON.stringify(homeNote) });
+      setHomeNote({ heading: saved.heading, subtitle: saved.subtitle, text: saved.text });
+      setNotice("Home note saved and updated for app users.");
+    } catch (error) { setNotice(error.message); }
+    finally { setHomeNoteBusy(false); }
+  };
+
   const removeUser = async (user) => {
     if (user.isAdmin) return setUsersError("Admin accounts are protected from deletion.");
     if (!window.confirm(`Permanently delete ${user.fullName || user.email || user.phone || "this user"} and their account data? This cannot be undone.`)) return;
@@ -221,6 +252,7 @@ export default function AdminPage() {
           setSession({ user: { email: firebaseUser.email, phone: firebaseUser.phoneNumber } });
           await loadQuestions(0, true);
           await loadCatalog();
+          await loadHomeNote();
         } catch {
           if (active) {
             setStatus("blocked");
@@ -236,12 +268,12 @@ export default function AdminPage() {
       if (!data.session) {
         setStatus("blocked");
         setAuthError("Sign in with an authorized admin account to manage questions.");
-      } else { loadQuestions(0, true); loadCatalog(); }
+      } else { loadQuestions(0, true); loadCatalog(); loadHomeNote(); }
     }).catch(() => {
       if (active) { setStatus("blocked"); setAuthError("Could not verify the current session. Please sign in again."); }
     });
     return () => { active = false; };
-  }, [loadQuestions, loadCatalog, supabase, usesFirebaseAuth]);
+  }, [loadQuestions, loadCatalog, loadHomeNote, supabase, usesFirebaseAuth]);
 
   useEffect(() => { fetch("/api/settings/music", { cache: "no-store" }).then((response) => response.ok ? response.json() : null).then((settings) => { if (settings) setMusicSettings(settings); }).catch(() => {}); }, []);
 
@@ -344,7 +376,7 @@ export default function AdminPage() {
   return <main className="admin-screen">
     <header className="admin-topbar"><a href="/" className="admin-brand">PYQ <span>CLOUD</span></a><div className="admin-topbar-actions"><span>{session?.user?.email || session?.user?.phone}</span><button className="admin-button secondary" onClick={() => window.location.assign("/")}>Back to app</button></div></header>
     <div className="admin-layout">
-      <aside className="admin-sidebar" aria-label="Admin sections"><small>WORKSPACE</small>{[["questions", "Question bank"], ["catalog", "Subjects & years"], ["users", "User accounts"]].map(([sectionId, label]) => <button type="button" className={activeAdminSection === sectionId ? "active" : ""} key={sectionId} onClick={() => navigateAdminSection(sectionId)}>{label}</button>)}<span>Signed in as admin</span></aside>
+      <aside className="admin-sidebar" aria-label="Admin sections"><small>WORKSPACE</small>{[["questions", "Question bank"], ["catalog", "Subjects & years"], ["users", "User accounts"], ["home-note", "Home note"]].map(([sectionId, label]) => <button type="button" className={activeAdminSection === sectionId ? "active" : ""} key={sectionId} onClick={() => navigateAdminSection(sectionId)}>{label}</button>)}<span>Signed in as admin</span></aside>
       <section className="admin-content">
         <div className="admin-heading"><div><span className="admin-eyebrow">ADMINISTRATION</span><h1>Question bank</h1><p>Add questions manually or import a validated JSON question set into Supabase.</p></div><div className="admin-count"><strong>{questionCount.toLocaleString()}</strong><span>questions</span></div></div>
         {notice && <div className="admin-notice" role="status">{notice}<button aria-label="Dismiss message" onClick={() => setNotice("")}>×</button></div>}
@@ -368,6 +400,8 @@ export default function AdminPage() {
           </section>
         </div>
 
+        <section className="admin-card" id="home-note"><div className="admin-card-heading"><span className="admin-card-icon">✦</span><div><h2>Home screen note</h2><p>Change the note heading and message shown on every user’s home screen.</p></div></div><form className="admin-home-note-form" onSubmit={saveHomeNote}><label>Heading<input value={homeNote.heading} onChange={(event) => setHomeNote({ ...homeNote, heading: event.target.value })} maxLength={100} required /></label><label>Subheading<input value={homeNote.subtitle} onChange={(event) => setHomeNote({ ...homeNote, subtitle: event.target.value })} maxLength={160} /></label><label>Message<textarea value={homeNote.text} onChange={(event) => setHomeNote({ ...homeNote, text: event.target.value })} maxLength={500} rows={3} required /></label><button className="admin-button primary" type="submit" disabled={homeNoteBusy}>{homeNoteBusy ? "Saving…" : "Save home note"}</button></form></section>
+
         <section className="admin-card admin-music-card"><div className="admin-card-heading"><span className="admin-card-icon">♫</span><div><h2>Focus music</h2><p>Choose the audio played in the app and set its volume.</p></div></div><div className="admin-music-controls"><label className="admin-music-enabled"><input type="checkbox" checked={musicSettings.enabled} onChange={(event) => setMusicSettings({ ...musicSettings, enabled: event.target.checked })} />Enable background music</label><label>Built-in track<select value={BUILT_IN_MUSIC.some((track) => track.url === musicSettings.trackUrl) ? musicSettings.trackUrl : "custom"} onChange={(event) => { if (event.target.value !== "custom") setMusicSettings({ ...musicSettings, trackUrl: event.target.value }); }}><option value="/audio/cloud-soft-focus.wav">Cloud Focus</option><option value="/audio/cloud-evening-piano.wav">Evening Piano</option><option value="/audio/pyq-focus.wav">Classic Focus</option><option value="custom">Custom audio URL</option></select></label><label>Audio file URL<input value={musicSettings.trackUrl} onChange={(event) => setMusicSettings({ ...musicSettings, trackUrl: event.target.value })} placeholder="/audio/pyq-focus.wav or https://…" /></label><label>Volume <span>{Math.round(Number(musicSettings.volume) * 100)}%</span><input type="range" min="0" max="1" step="0.01" value={musicSettings.volume} onChange={(event) => setMusicSettings({ ...musicSettings, volume: Number(event.target.value) })} /></label><button className="admin-button primary" onClick={saveMusicSettings} disabled={musicBusy}>{musicBusy ? "Saving…" : "Save music settings"}</button></div></section>
 
         <section className="admin-card admin-question-list" id="questions"><div className="admin-list-heading"><div><h2>Question sets</h2><p>Browse and edit every question stored in the production question bank.</p></div><button className="admin-button secondary" onClick={() => loadQuestions(page)} disabled={loading}>{loading ? "Refreshing…" : "Refresh"}</button></div>
@@ -387,11 +421,11 @@ export default function AdminPage() {
           </div>
         </section>
 
-        <section className="admin-card" id="users"><div className="admin-list-heading"><div><h2>User accounts</h2><p>Roles are read from each Supabase profile. Change a role in the Supabase profiles table.</p></div><button className="admin-button secondary" onClick={() => loadUsers(1)} disabled={usersBusy}>{usersBusy ? "Loading…" : "Load users"}</button></div>
+        <section className="admin-card" id="users"><div className="admin-list-heading"><div><h2>User accounts</h2><p>Review account contact details and change any account between user and admin.</p></div><button className="admin-button secondary" onClick={() => loadUsers(1)} disabled={usersBusy}>{usersBusy ? "Loading…" : "Load users"}</button></div>
           {usersError && <p className="admin-field-error" role="alert">{usersError}</p>}
           <form className="admin-user-search" onSubmit={(event) => { event.preventDefault(); loadUsers(1, userSearch); }}><input aria-label="Search users" placeholder="Search name, email or phone" value={userSearch} onChange={(event) => setUserSearch(event.target.value)} /><button className="admin-button primary" type="submit" disabled={usersBusy}>Search</button></form>
           {editingUser && <form className="admin-user-edit" onSubmit={saveUserName}><div><b>Edit profile</b><small>{editingUser.email || editingUser.phone}</small></div><label>Full name<input value={editingUserName} onChange={(event) => setEditingUserName(event.target.value)} maxLength={80} required /></label><button className="admin-button primary" type="submit" disabled={usersBusy}>{usersBusy ? "Saving…" : "Save profile"}</button><button className="admin-button secondary" type="button" onClick={() => setEditingUser(null)}>Cancel</button></form>}
-          {users.length ? <div className="admin-table-wrap"><table className="admin-users-table"><thead><tr><th>User</th><th>Contact</th><th>Role</th><th>Joined</th><th>Actions</th></tr></thead><tbody>{users.map((user) => <tr key={user.id}><td><b>{user.fullName || "Name not provided"}</b><small>{user.isAdmin ? "Admin account · protected" : user.confirmed ? "Verified account" : "Unverified account"}</small></td><td>{user.email || user.phone || "No contact details"}</td><td>{user.role}</td><td>{user.createdAt ? new Date(user.createdAt).toLocaleDateString() : "—"}</td><td><div className="admin-row-actions"><button className="admin-edit-button" disabled={usersBusy} onClick={() => { setEditingUser(user); setEditingUserName(user.fullName || ""); }}>Edit name</button><button className="admin-remove-button" disabled={usersBusy || user.isAdmin} onClick={() => removeUser(user)}>Delete</button></div></td></tr>)}</tbody></table></div> : <div className="admin-empty">{usersBusy ? "Loading users…" : usersError ? "User list unavailable." : "Load users to see registered profiles."}</div>}
+          {users.length ? <div className="admin-table-wrap"><table className="admin-users-table"><thead><tr><th>User</th><th>Email</th><th>Mobile number</th><th>Role</th><th>Joined</th><th>Actions</th></tr></thead><tbody>{users.map((user) => { const isCurrentAdmin = Boolean((session?.user?.email && session.user.email === user.email) || (session?.user?.phone && session.user.phone === user.phone)); return <tr key={user.id}><td><b>{user.fullName || "Name not provided"}</b></td><td>{user.email || "—"}</td><td>{user.phone || "—"}</td><td><select className="admin-role-select" aria-label={`Role for ${user.fullName || user.email || user.phone || "user"}`} value={user.role} disabled={usersBusy} onChange={(event) => saveUserRole(user, event.target.value)}><option value="user">User</option><option value="admin">Admin</option></select>{isCurrentAdmin && user.role === "admin" && <small>Changing yourself to User will exit this panel</small>}</td><td>{user.createdAt ? new Date(user.createdAt).toLocaleDateString() : "—"}</td><td><div className="admin-row-actions"><button className="admin-edit-button" disabled={usersBusy} onClick={() => { setEditingUser(user); setEditingUserName(user.fullName || ""); }}>Edit name</button><button className="admin-remove-button" disabled={usersBusy || user.isAdmin} onClick={() => removeUser(user)}>Delete</button></div></td></tr>; })}</tbody></table></div> : <div className="admin-empty">{usersBusy ? "Loading users…" : usersError ? "User list unavailable." : "Load users to see registered profiles."}</div>}
           {(users.length > 0 || usersPage > 1) && <div className="admin-pagination"><span>Page {usersPage}</span><div><button className="admin-button secondary" disabled={usersPage <= 1 || usersBusy} onClick={() => loadUsers(usersPage - 1)}>Previous</button><button className="admin-button secondary" disabled={!usersHasMore || usersBusy} onClick={() => loadUsers(usersPage + 1)}>Next</button></div></div>}
         </section>
     <footer className="admin-footer">Question content is saved to the configured Supabase project. Admin actions require server-verified access.</footer>
