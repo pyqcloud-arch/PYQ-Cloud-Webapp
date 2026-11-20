@@ -52,6 +52,8 @@ export default function AdminPage() {
   const [questions, setQuestions] = useState([]);
   const [questionCount, setQuestionCount] = useState(0);
   const [page, setPage] = useState(0);
+  const [questionPageSize, setQuestionPageSize] = useState(25);
+  const [activeAdminSection, setActiveAdminSection] = useState("questions");
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -103,10 +105,10 @@ export default function AdminPage() {
     return payload;
   }, [supabase, usesFirebaseAuth]);
 
-  const loadQuestions = useCallback(async (requestedPage = 0, checkAccess = false, filterSet = appliedFilters) => {
+  const loadQuestions = useCallback(async (requestedPage = 0, checkAccess = false, filterSet = appliedFilters, perPage = questionPageSize) => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ page: String(requestedPage) });
+      const params = new URLSearchParams({ page: String(requestedPage), perPage: String(perPage) });
       Object.entries(filterSet).forEach(([key, value]) => { if (value) params.set(key, value); });
       const result = await request(`/api/admin/questions?${params}`);
       setQuestions(result.questions || []);
@@ -120,7 +122,15 @@ export default function AdminPage() {
         setAuthError(error.message);
       } else setNotice(error.message);
     } finally { setLoading(false); }
-  }, [request, appliedFilters]);
+  }, [request, appliedFilters, questionPageSize]);
+
+  const navigateAdminSection = (sectionId) => {
+    const section = document.getElementById(sectionId);
+    if (!section) return;
+    setActiveAdminSection(sectionId);
+    window.history.replaceState(null, "", `#${sectionId}`);
+    section.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   const loadCatalog = useCallback(async () => {
     setCatalogBusy(true);
@@ -246,10 +256,10 @@ export default function AdminPage() {
       const result = editingId
         ? await request(`/api/admin/questions?id=${encodeURIComponent(editingId)}`, { method: "PATCH", body: JSON.stringify({ question }) })
         : await request("/api/admin/questions", { method: "POST", body: JSON.stringify({ type: "single", question }) });
-      setNotice(editingId ? "Question updated." : `Question saved. ${result.saved} record added.`);
+      setNotice(editingId ? "Question updated." : `Question saved. ${result.saved} record added.${result.skipped ? ` ${result.skipped} duplicate skipped.` : ""}`);
       setEditingId("");
       setForm({ ...emptyQuestion, year: new Date().getFullYear() });
-      await loadQuestions(0);
+      await loadQuestions(0, false, appliedFilters);
     } catch (error) { setNotice(error.message); }
     finally { setBusy(false); }
   };
@@ -304,7 +314,7 @@ export default function AdminPage() {
     try {
       await request(`/api/admin/questions?id=${encodeURIComponent(question.id)}`, { method: "DELETE" });
       setNotice("Question removed.");
-      await loadQuestions(page);
+      await loadQuestions(questions.length === 1 && page > 0 ? page - 1 : page);
     } catch (error) { setNotice(error.message); }
     finally { setBusy(false); }
   };
@@ -334,7 +344,7 @@ export default function AdminPage() {
   return <main className="admin-screen">
     <header className="admin-topbar"><a href="/" className="admin-brand">PYQ <span>CLOUD</span></a><div className="admin-topbar-actions"><span>{session?.user?.email || session?.user?.phone}</span><button className="admin-button secondary" onClick={() => window.location.assign("/")}>Back to app</button></div></header>
     <div className="admin-layout">
-      <aside className="admin-sidebar"><small>WORKSPACE</small><a className="active" href="#questions">Question bank</a><a href="#catalog">Subjects &amp; years</a><a href="#users">User accounts</a><span>Signed in as admin</span></aside>
+      <aside className="admin-sidebar" aria-label="Admin sections"><small>WORKSPACE</small>{[["questions", "Question bank"], ["catalog", "Subjects & years"], ["users", "User accounts"]].map(([sectionId, label]) => <button type="button" className={activeAdminSection === sectionId ? "active" : ""} key={sectionId} onClick={() => navigateAdminSection(sectionId)}>{label}</button>)}<span>Signed in as admin</span></aside>
       <section className="admin-content">
         <div className="admin-heading"><div><span className="admin-eyebrow">ADMINISTRATION</span><h1>Question bank</h1><p>Add questions manually or import a validated JSON question set into Supabase.</p></div><div className="admin-count"><strong>{questionCount.toLocaleString()}</strong><span>questions</span></div></div>
         {notice && <div className="admin-notice" role="status">{notice}<button aria-label="Dismiss message" onClick={() => setNotice("")}>×</button></div>}
@@ -343,7 +353,7 @@ export default function AdminPage() {
             <label className="admin-file-picker">Choose a JSON or CSV file<input type="file" accept="application/json,.json,text/csv,.csv" onChange={(event) => readQuestionFile(event.target.files?.[0])} /></label>
             {sourceFile && <p className="admin-file-name">Selected: {sourceFile.name}</p>}
             {sourceError && <p className="admin-field-error" role="alert">{sourceError}</p>}
-            {sourceData && <div className="admin-import-preview"><b>{getImportQuestions(sourceData).length} questions ready</b><span>Questions are validated and saved with stable IDs, so importing the same file again updates those records instead of duplicating them.</span><ul>{getImportQuestions(sourceData).slice(0, 3).map((question, index) => <li key={question.id || index}>{titleOf(question)}</li>)}</ul><button className="admin-button primary full" onClick={importQuestions} disabled={busy}>{busy ? "Importing…" : `Import ${getImportQuestions(sourceData).length} questions`}</button></div>}
+            {sourceData && <div className="admin-import-preview"><b>{getImportQuestions(sourceData).length} questions ready</b><span>Questions are validated before saving. Existing matching questions are skipped to avoid duplicates.</span><ul>{getImportQuestions(sourceData).slice(0, 3).map((question, index) => <li key={question.id || index}>{titleOf(question)}</li>)}</ul><button className="admin-button primary full" onClick={importQuestions} disabled={busy}>{busy ? "Importing…" : `Import ${getImportQuestions(sourceData).length} questions`}</button></div>}
           </section>
 
           <section className="admin-card" id="admin-question-form"><div className="admin-card-heading"><span className="admin-card-icon">{editingId ? "✎" : "＋"}</span><div><h2>{editingId ? "Edit question" : "Add a question"}</h2><p>Enter one four-option multiple-choice question.</p></div>{editingId && <button type="button" className="admin-button secondary" onClick={() => { setEditingId(""); setForm(emptyQuestion); }}>Cancel edit</button>}</div>
@@ -360,10 +370,10 @@ export default function AdminPage() {
 
         <section className="admin-card admin-music-card"><div className="admin-card-heading"><span className="admin-card-icon">♫</span><div><h2>Focus music</h2><p>Choose the audio played in the app and set its volume.</p></div></div><div className="admin-music-controls"><label className="admin-music-enabled"><input type="checkbox" checked={musicSettings.enabled} onChange={(event) => setMusicSettings({ ...musicSettings, enabled: event.target.checked })} />Enable background music</label><label>Built-in track<select value={BUILT_IN_MUSIC.some((track) => track.url === musicSettings.trackUrl) ? musicSettings.trackUrl : "custom"} onChange={(event) => { if (event.target.value !== "custom") setMusicSettings({ ...musicSettings, trackUrl: event.target.value }); }}><option value="/audio/cloud-soft-focus.wav">Cloud Focus</option><option value="/audio/cloud-evening-piano.wav">Evening Piano</option><option value="/audio/pyq-focus.wav">Classic Focus</option><option value="custom">Custom audio URL</option></select></label><label>Audio file URL<input value={musicSettings.trackUrl} onChange={(event) => setMusicSettings({ ...musicSettings, trackUrl: event.target.value })} placeholder="/audio/pyq-focus.wav or https://…" /></label><label>Volume <span>{Math.round(Number(musicSettings.volume) * 100)}%</span><input type="range" min="0" max="1" step="0.01" value={musicSettings.volume} onChange={(event) => setMusicSettings({ ...musicSettings, volume: Number(event.target.value) })} /></label><button className="admin-button primary" onClick={saveMusicSettings} disabled={musicBusy}>{musicBusy ? "Saving…" : "Save music settings"}</button></div></section>
 
-        <section className="admin-card admin-question-list" id="questions"><div className="admin-list-heading"><div><h2>Question sets</h2><p>Search and manage questions by practice set, subject and year.</p></div><button className="admin-button secondary" onClick={() => loadQuestions(page)} disabled={loading}>{loading ? "Refreshing…" : "Refresh"}</button></div>
+        <section className="admin-card admin-question-list" id="questions"><div className="admin-list-heading"><div><h2>Question sets</h2><p>Browse and edit every question stored in the production question bank.</p></div><button className="admin-button secondary" onClick={() => loadQuestions(page)} disabled={loading}>{loading ? "Refreshing…" : "Refresh"}</button></div>
           <form className="admin-filters" onSubmit={(event) => { event.preventDefault(); setAppliedFilters(filters); loadQuestions(0, false, filters); }}><input aria-label="Search questions or topics" placeholder="Search question, topic or exam" value={filters.q} onChange={(event) => setFilters({ ...filters, q: event.target.value })} /><input aria-label="Filter by subject" placeholder="Subject" value={filters.subject} onChange={(event) => setFilters({ ...filters, subject: event.target.value })} /><input aria-label="Filter by year" placeholder="Year" inputMode="numeric" maxLength={4} value={filters.year} onChange={(event) => setFilters({ ...filters, year: event.target.value.replace(/\D/g, "").slice(0, 4) })} /><button className="admin-button primary" type="submit" disabled={loading}>Apply filters</button><button className="admin-button secondary" type="button" onClick={() => { const empty = { q: "", subject: "", year: "" }; setFilters(empty); setAppliedFilters(empty); loadQuestions(0, false, empty); }}>Clear</button></form>
           {questions.length ? <div className="admin-table-wrap"><table><thead><tr><th>Question / practice set</th><th>Subject</th><th>Year</th><th>Actions</th></tr></thead><tbody>{questions.map((question) => <tr key={question.id}><td><b>{question.question_number ? `#${question.question_number} ` : ""}{question.prompt}</b><small>{question.exam} · {question.topic}</small></td><td>{question.subject}</td><td>{question.year}</td><td><div className="admin-row-actions"><button className="admin-edit-button" disabled={busy} onClick={() => editQuestion(question)}>Edit</button><button className="admin-remove-button" disabled={busy} onClick={() => removeQuestion(question)}>Remove</button></div></td></tr>)}</tbody></table></div> : <div className="admin-empty">{loading ? "Loading questions…" : "No questions match these filters."}</div>}
-          <div className="admin-pagination"><span>Page {page + 1} · {questionCount.toLocaleString()} total</span><div><button className="admin-button secondary" disabled={page === 0 || loading} onClick={() => loadQuestions(page - 1)}>Previous</button><button className="admin-button secondary" disabled={(page + 1) * 25 >= questionCount || loading} onClick={() => loadQuestions(page + 1)}>Next</button></div></div>
+          <div className="admin-pagination"><span>Showing {questionCount ? (page * questionPageSize) + 1 : 0}–{Math.min((page + 1) * questionPageSize, questionCount)} of {questionCount.toLocaleString()} questions</span><div className="admin-question-pagination-controls"><label>Per page<select aria-label="Questions per page" value={questionPageSize} disabled={loading} onChange={(event) => { const nextSize = Number(event.target.value); setQuestionPageSize(nextSize); loadQuestions(0, false, appliedFilters, nextSize); }}><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option></select></label><button className="admin-button secondary" disabled={page === 0 || loading} onClick={() => loadQuestions(page - 1)}>Previous</button><button className="admin-button secondary" disabled={(page + 1) * questionPageSize >= questionCount || loading} onClick={() => loadQuestions(page + 1)}>Next</button></div></div>
         </section>
 
         <section className="admin-card" id="catalog"><div className="admin-list-heading"><div><h2>Practice subjects &amp; years</h2><p>Add or hide filters shown in Practice by Subject and Practice by Year. Removing an item preserves its questions.</p></div><button className="admin-button secondary" onClick={loadCatalog} disabled={catalogBusy}>{catalogBusy ? "Refreshing…" : "Refresh"}</button></div>

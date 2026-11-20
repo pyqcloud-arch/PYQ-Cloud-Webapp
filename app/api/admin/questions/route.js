@@ -117,7 +117,9 @@ export async function GET(request) {
   if (auth.error) return auth.error;
   const { searchParams } = new URL(request.url);
   const page = Math.max(0, Math.min(10000, Number.parseInt(searchParams.get("page") || "0", 10) || 0));
-  const start = page * 25;
+  const requestedPerPage = Number.parseInt(searchParams.get("perPage") || "25", 10) || 25;
+  const perPage = Math.max(1, Math.min(100, requestedPerPage));
+  const start = page * perPage;
   let query = auth.database.from("questions")
     .select("id, subject, year, exam, topic, prompt, options, correct_option, explanation, question_number, created_at", { count: "exact" });
   const year = searchParams.get("year");
@@ -131,9 +133,9 @@ export async function GET(request) {
   }
   const { data, error, count } = await query
     .order("year", { ascending: false }).order("question_number", { ascending: true, nullsFirst: false })
-    .range(start, start + 24);
+    .range(start, start + perPage - 1);
   if (error) return response({ error: "Could not load the question bank. Check the database setup." }, 500);
-  return response({ count: count ?? 0, page, questions: data ?? [] });
+  return response({ count: count ?? 0, page, perPage, questions: data ?? [] });
 }
 
 export async function PATCH(request) {
@@ -148,8 +150,9 @@ export async function PATCH(request) {
   try { row = questionFromSource(body?.question, "", 0); }
   catch (error) { return response({ error: error.message }, 400); }
   row.id = id;
-  const { error } = await auth.database.from("questions").update(row).eq("id", id);
+  const { data, error } = await auth.database.from("questions").update(row).eq("id", id).select("id").maybeSingle();
   if (error) return response({ error: "Could not update this question. Confirm the database schema is configured." }, 500);
+  if (!data?.id) return response({ error: "The question no longer exists. Refresh the question list and try again." }, 404);
   console.info("Admin question update completed", { adminEmail: auth.adminEmail, questionId: id });
   return response({ updated: true });
 }
