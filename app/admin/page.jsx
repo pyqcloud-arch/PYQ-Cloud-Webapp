@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { onAuthStateChanged, signOut as firebaseSignOut } from "firebase/auth";
 import { createClient } from "../../lib/supabase/client";
+import { getFirebaseAuth } from "../../lib/firebase/client";
 
 const BUILT_IN_MUSIC = [
   { label: "Cloud Focus", url: "/audio/cloud-soft-focus.wav" },
@@ -74,10 +76,18 @@ export default function AdminPage() {
   const [userSearch, setUserSearch] = useState("");
   const [editingUser, setEditingUser] = useState(null);
   const [editingUserName, setEditingUserName] = useState("");
+  const usesFirebaseAuth = Boolean(process.env.NEXT_PUBLIC_FIREBASE_API_KEY);
 
   const request = useCallback(async (url, options = {}) => {
-    const { data } = await supabase.auth.getSession();
-    const accessToken = data.session?.access_token;
+    let accessToken;
+    if (usesFirebaseAuth) {
+      const firebaseUser = getFirebaseAuth().currentUser;
+      accessToken = firebaseUser ? await firebaseUser.getIdToken() : null;
+    } else {
+      const { data, error } = await supabase.auth.getSession();
+      if (error) throw error;
+      accessToken = data.session?.access_token;
+    }
     if (!accessToken) throw new Error("Sign in to continue.");
     const result = await fetch(url, {
       ...options,
@@ -91,7 +101,7 @@ export default function AdminPage() {
       throw error;
     }
     return payload;
-  }, [supabase]);
+  }, [supabase, usesFirebaseAuth]);
 
   const loadQuestions = useCallback(async (requestedPage = 0, checkAccess = false, filterSet = appliedFilters) => {
     setLoading(true);
@@ -186,6 +196,30 @@ export default function AdminPage() {
 
   useEffect(() => {
     let active = true;
+    if (usesFirebaseAuth) {
+      const unsubscribe = onAuthStateChanged(getFirebaseAuth(), async (firebaseUser) => {
+        if (!active) return;
+        if (!firebaseUser) {
+          setSession(null);
+          setStatus("blocked");
+          setAuthError("Sign in with an authorized admin account to manage questions.");
+          return;
+        }
+        try {
+          await firebaseUser.getIdToken();
+          if (!active) return;
+          setSession({ user: { email: firebaseUser.email, phone: firebaseUser.phoneNumber } });
+          await loadQuestions(0, true);
+          await loadCatalog();
+        } catch {
+          if (active) {
+            setStatus("blocked");
+            setAuthError("Could not verify the current Firebase session. Please sign in again.");
+          }
+        }
+      });
+      return () => { active = false; unsubscribe(); };
+    }
     supabase.auth.getSession().then(({ data }) => {
       if (!active) return;
       setSession(data.session);
@@ -197,7 +231,7 @@ export default function AdminPage() {
       if (active) { setStatus("blocked"); setAuthError("Could not verify the current session. Please sign in again."); }
     });
     return () => { active = false; };
-  }, [loadQuestions, loadCatalog, supabase]);
+  }, [loadQuestions, loadCatalog, supabase, usesFirebaseAuth]);
 
   useEffect(() => { fetch("/api/settings/music", { cache: "no-store" }).then((response) => response.ok ? response.json() : null).then((settings) => { if (settings) setMusicSettings(settings); }).catch(() => {}); }, []);
 
@@ -283,8 +317,13 @@ export default function AdminPage() {
 
   const restartAdminSignIn = async () => {
     if (session) {
-      const { error } = await supabase.auth.signOut();
-      if (error) { setAuthError("Could not sign out this account. Please sign out in the app and try again."); return; }
+      if (usesFirebaseAuth) {
+        try { await firebaseSignOut(getFirebaseAuth()); }
+        catch { setAuthError("Could not sign out this account. Please sign out in the app and try again."); return; }
+      } else {
+        const { error } = await supabase.auth.signOut();
+        if (error) { setAuthError("Could not sign out this account. Please sign out in the app and try again."); return; }
+      }
     }
     window.location.assign("/?screen=Welcome&next=%2Fadmin");
   };
