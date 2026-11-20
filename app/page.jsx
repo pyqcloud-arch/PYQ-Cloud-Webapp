@@ -16,7 +16,8 @@ import {
   signOut as firebaseSignOut,
   updatePassword as firebaseUpdatePassword,
 } from "firebase/auth";
-import { createGoogleProvider, getFirebaseAuth } from "../lib/firebase/client";
+import { getFunctions, httpsCallable } from "firebase/functions";
+import { createGoogleProvider, getFirebaseApp, getFirebaseAuth } from "../lib/firebase/client";
 
 const explanationTags = new Set([
   "p", "strong", "b", "em", "i", "ul", "ol", "li", "br",
@@ -182,10 +183,13 @@ const wait = (milliseconds) => new Promise((resolve) => window.setTimeout(resolv
 
 async function syncFirebaseProfile(firebaseUser) {
   let lastError;
+  const ensureRole = httpsCallable(getFunctions(getFirebaseApp(), "us-central1"), "ensureSupabaseAuthenticatedRole");
+  await ensureRole();
+  await firebaseUser.getIdToken(true);
   for (let attempt = 0; attempt < 8; attempt += 1) {
     try {
-      // The user-created trigger sets this claim asynchronously on Firebase.
-      await firebaseUser.getIdToken(attempt > 0);
+      // Callable claim setup also covers accounts created before the trigger was deployed.
+      if (attempt > 0) await firebaseUser.getIdToken(true);
       const { data, error } = await supabase.rpc("ensure_firebase_profile", {
         p_full_name: firebaseUser.displayName || null,
       });
