@@ -3,17 +3,27 @@ import { adminResponse, authorizeAdmin } from "../../../../lib/supabase/admin-se
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const defaultSubjects = ["Polity", "Economy", "Geography", "History", "Art and Culture", "International relations", "Science and Technology", "Environment", "Current Affairs", "Miscellaneous"];
-const defaultYears = Array.from({ length: 16 }, (_, index) => String(2026 - index));
 const normalize = (kind, value) => kind === "year" ? String(Number(value)) : String(value || "").trim().replace(/\s+/g, " ");
+const seededSubjectDefaults = new Set(["polity", "economy", "geography", "history", "art and culture", "international relations", "science and technology", "environment", "current affairs", "miscellaneous"]);
+const seededYearDefaults = new Set(Array.from({ length: 16 }, (_, index) => String(2026 - index)));
 
 async function readCatalog(database) {
-  const [settingsResult, questionsResult] = await Promise.all([
-    database.from("app_settings").select("value").eq("key", "catalog").maybeSingle(),
-    database.from("questions").select("subject, year").range(0, 9999),
-  ]);
+  const settingsPromise = database.from("app_settings").select("value").eq("key", "catalog").maybeSingle();
+  const questionRows = [];
+  let totalQuestions = 0;
+  for (let offset = 0; ; ) {
+    const { data, error, count } = await database.from("questions")
+      .select("subject, year", offset === 0 ? { count: "exact" } : undefined)
+      .range(offset, offset + 499);
+    if (error) throw new Error("Could not read subjects and years from the question bank.");
+    const rows = data || [];
+    if (offset === 0) totalQuestions = count ?? rows.length;
+    questionRows.push(...rows);
+    if (!rows.length || offset + rows.length >= totalQuestions) break;
+    offset += rows.length;
+  }
+  const settingsResult = await settingsPromise;
   if (settingsResult.error) throw new Error("Could not read the practice catalogue. Apply the admin catalogue migration first.");
-  if (questionsResult.error) throw new Error("Could not read subjects and years from the question bank.");
   const saved = settingsResult.data?.value || {};
   const savedSubjects = Array.isArray(saved.subjects) ? saved.subjects : [];
   const savedYears = Array.isArray(saved.years) ? saved.years : [];
@@ -26,18 +36,32 @@ async function readCatalog(database) {
     const old = map.get(key);
     map.set(key, { value: old?.value || value, active: old?.active ?? true, questionCount: old?.questionCount || 0 });
   };
-  defaultSubjects.forEach((value) => put(subjects, value, "subject"));
-  defaultYears.forEach((value) => put(years, value, "year"));
-  (questionsResult.data || []).forEach((question) => {
+  questionRows.forEach((question) => {
     put(subjects, question.subject, "subject");
     put(years, question.year, "year");
     const subject = subjects.get(String(question.subject || "").trim().replace(/\s+/g, " ").toLowerCase());
-    const year = years.get(String(question.year));
+    const year = years.get(normalize("year", question.year).toLowerCase());
     if (subject) subject.questionCount += 1;
     if (year) year.questionCount += 1;
   });
-  savedSubjects.forEach((entry) => { put(subjects, entry?.value, "subject"); const row = subjects.get(normalize("subject", entry?.value).toLowerCase()); if (row) row.active = entry.active !== false; });
-  savedYears.forEach((entry) => { put(years, entry?.value, "year"); const row = years.get(normalize("year", entry?.value).toLowerCase()); if (row) row.active = entry.active !== false; });
+  savedSubjects.forEach((entry) => {
+    const key = normalize("subject", entry?.value).toLowerCase();
+    const row = subjects.get(key);
+    // The initial catalogue migration seeded generic labels. Hide those stale
+    // placeholders when the live question bank has no matching questions.
+    if (!row && seededSubjectDefaults.has(key)) return;
+    put(subjects, entry?.value, "subject");
+    const savedRow = subjects.get(key);
+    if (savedRow) savedRow.active = entry.active !== false;
+  });
+  savedYears.forEach((entry) => {
+    const key = normalize("year", entry?.value).toLowerCase();
+    const row = years.get(key);
+    if (!row && seededYearDefaults.has(key)) return;
+    put(years, entry?.value, "year");
+    const savedRow = years.get(key);
+    if (savedRow) savedRow.active = entry.active !== false;
+  });
   return { subjects: [...subjects.values()].sort((a, b) => a.value.localeCompare(b.value)), years: [...years.values()].sort((a, b) => Number(b.value) - Number(a.value)) };
 }
 
