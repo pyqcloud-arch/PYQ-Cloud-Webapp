@@ -181,6 +181,15 @@ const supabase = createClient();
 const usesFirebaseAuth = () => Boolean(process.env.NEXT_PUBLIC_FIREBASE_API_KEY);
 const wait = (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
+async function getSupabaseProfileRole(userId) {
+  try {
+    const { data, error } = await supabase.from("profiles").select("role").eq("id", userId).maybeSingle();
+    return !error && data?.role === "admin" ? "admin" : "user";
+  } catch {
+    return "user";
+  }
+}
+
 async function syncFirebaseProfile(firebaseUser) {
   let lastError;
   const ensureRole = httpsCallable(getFunctions(getFirebaseApp(), "us-central1"), "ensureSupabaseAuthenticatedRole");
@@ -199,10 +208,15 @@ async function syncFirebaseProfile(firebaseUser) {
       return {
         id: profile.id,
         firebase_uid: firebaseUser.uid,
+        role: profile.role === "admin" ? "admin" : "user",
         email: firebaseUser.email || profile.email || "",
         phone: firebaseUser.phoneNumber || profile.phone || "",
         created_at: profile.created_at,
-        user_metadata: profile.user_metadata || {},
+        full_name: profile.full_name || "",
+        user_metadata: {
+          ...(profile.user_metadata || {}),
+          full_name: profile.user_metadata?.full_name || profile.full_name || firebaseUser.displayName || "",
+        },
         authProvider: "firebase",
       };
     } catch (error) {
@@ -217,6 +231,14 @@ const unauthenticatedScreens = new Set(["Welcome", "Auth", "Phone Auth", "Verify
 function hasCompletedOnboarding(user) {
   if (!user?.id) return false;
   return Boolean(user.user_metadata?.onboarding_completed);
+}
+function needsAccountSettings(user) {
+  const fullName = user?.user_metadata?.full_name || user?.full_name || "";
+  return Boolean(user?.phone && !String(fullName).trim());
+}
+function authenticatedLandingScreen(user) {
+  if (needsAccountSettings(user)) return "Account Settings";
+  return hasCompletedOnboarding(user) ? "Home" : "About You";
 }
 const builtInMusicTracks = [
   { label: "Cloud Focus", url: "/audio/cloud-soft-focus.wav" },
@@ -567,7 +589,9 @@ export default function Page() {
               window.location.replace("/admin");
               return;
             }
-            resetNavigation(hasCompletedOnboarding(firebaseProfile) ? "Home" : "About You");
+            const landingScreen = authenticatedLandingScreen(firebaseProfile);
+            if (landingScreen === "Account Settings") setAccountEditing(true);
+            resetNavigation(landingScreen);
             setAuthReady(true);
             window.setTimeout(() => loadUserData(firebaseProfile), 0);
           } catch (error) {
@@ -582,19 +606,26 @@ export default function Page() {
         setAuthReady(true);
       }
     } else {
-      supabase.auth.getSession().then(({ data }) => {
+      supabase.auth.getSession().then(async ({ data }) => {
         if (!active) return;
         const sessionUser = data.session?.user ?? null;
-        setUser(sessionUser);
-        setProfileName(sessionUser?.user_metadata?.full_name ?? "");
-        setAccountEmail(sessionUser?.email ?? "");
-        setAccountPhone(sessionUser?.phone ?? "");
-        if (sessionUser && new URLSearchParams(window.location.search).get("next") === "/admin") window.location.replace("/admin");
-        else if (sessionUser) resetNavigation(requestedScreen === "Reset Password" ? "Reset Password" : hasCompletedOnboarding(sessionUser) ? "Home" : "About You");
+        const sessionProfileRole = sessionUser ? await getSupabaseProfileRole(sessionUser.id) : "user";
+        if (!active) return;
+        const resolvedSessionUser = sessionUser ? { ...sessionUser, role: sessionProfileRole } : null;
+        setUser(resolvedSessionUser);
+        setProfileName(resolvedSessionUser?.user_metadata?.full_name ?? "");
+        setAccountEmail(resolvedSessionUser?.email ?? "");
+        setAccountPhone(resolvedSessionUser?.phone ?? "");
+        if (resolvedSessionUser && new URLSearchParams(window.location.search).get("next") === "/admin") window.location.replace("/admin");
+        else if (resolvedSessionUser) {
+          const landingScreen = requestedScreen === "Reset Password" ? "Reset Password" : authenticatedLandingScreen(resolvedSessionUser);
+          if (landingScreen === "Account Settings") setAccountEditing(true);
+          resetNavigation(landingScreen);
+        }
         else resetNavigation(requestedScreen === "Auth" || requestedScreen === "Reset Password" ? requestedScreen : "Welcome");
         setAuthReady(true);
-        loadAvatar(sessionUser);
-        loadUserData(sessionUser);
+        loadAvatar(resolvedSessionUser);
+        loadUserData(resolvedSessionUser);
       }).catch(() => {
         if (!active) return;
         setUser(null);
@@ -603,15 +634,23 @@ export default function Page() {
       });
       const { data } = supabase.auth.onAuthStateChange((_event, session) => {
         const nextUser = session?.user ?? null;
-        setUser(nextUser);
+        setUser(nextUser ? { ...nextUser, role: "user" } : null);
         loadAvatar(nextUser);
         if (nextUser) { setAuthEmail(nextUser.email ?? ""); setProfileName(nextUser.user_metadata?.full_name ?? ""); }
         setAccountEmail(nextUser?.email ?? "");
         if (nextUser?.phone) setAccountPhone(nextUser.phone);
+        if (nextUser) window.setTimeout(async () => {
+          if (!active) return;
+          const role = await getSupabaseProfileRole(nextUser.id);
+          if (!active) return;
+          setUser((current) => current?.id === nextUser.id ? { ...current, role } : current);
+        }, 0);
         if (_event === "PASSWORD_RECOVERY") resetNavigation("Reset Password");
         else if (_event === "SIGNED_IN") {
           if (new URLSearchParams(window.location.search).get("next") === "/admin") { window.location.replace("/admin"); return; }
-          resetNavigation(hasCompletedOnboarding(nextUser) ? "Home" : "About You");
+          const landingScreen = authenticatedLandingScreen(nextUser);
+          if (landingScreen === "Account Settings") setAccountEditing(true);
+          resetNavigation(landingScreen);
         }
         else if (_event === "SIGNED_OUT") resetNavigation("Welcome");
         if (_event === "SIGNED_IN" || _event === "SIGNED_OUT") setAuthReady(true);
@@ -1342,7 +1381,12 @@ export default function Page() {
         const { user: firebaseUser } = await phoneConfirmationRef.current.confirm(phoneCode.trim());
         await firebaseUser.getIdToken(true);
         phoneConfirmationRef.current = null;
-        setAccountPhone(firebaseUser.phoneNumber || phoneNumber);
+        const firebaseProfile = await syncFirebaseProfile(firebaseUser);
+        setUser(firebaseProfile);
+        setProfileName(firebaseProfile.user_metadata.full_name || firebaseUser.displayName || "");
+        setAccountEmail(firebaseProfile.email || "");
+        setAccountPhone(firebaseProfile.phone || phoneNumber);
+        setAccountEditing(needsAccountSettings(firebaseProfile));
         setPhoneOtpErrorMessage("Incorrect code. Check the code and try again.");
         go("Phone Verified");
         return;
@@ -1398,23 +1442,31 @@ export default function Page() {
     event.preventDefault();
     if (!user) return setToast("Sign in to update your account settings.");
     const fullName = profileName.trim();
+    const finishingInitialSetup = needsAccountSettings(user);
+    if (finishingInitialSetup && !fullName) return setToast("Enter your name to finish setting up your account.");
     try {
       if (user.authProvider === "firebase") {
         if (accountEmail.trim() && accountEmail.trim() !== user.email) throw new Error("To change the sign-in email, use the Firebase account verification flow.");
         if (accountPhone.trim() && accountPhone.trim() !== user.phone) throw new Error("To change the sign-in phone, verify it again through Continue with Phone.");
         if (fullName) {
-          const { error } = await updateUserMetadata({ full_name: fullName });
+          const { error } = await updateUserMetadata({ full_name: fullName, ...(finishingInitialSetup ? { onboarding_completed: true } : {}) });
           if (error) throw error;
         }
       } else {
-        const changes = { data: { ...user.user_metadata, ...(fullName ? { full_name: fullName } : {}) } };
+        const changes = { data: { ...user.user_metadata, ...(fullName ? { full_name: fullName } : {}), ...(finishingInitialSetup ? { onboarding_completed: true } : {}) } };
         if (accountEmail.trim() && accountEmail.trim() !== user.email) changes.email = accountEmail.trim();
         if (accountPhone.trim() && accountPhone.trim() !== user.phone) changes.phone = accountPhone.trim();
         const { error } = await supabase.auth.updateUser(changes);
         if (error) throw error;
       }
+      if (fullName) {
+        const { error: profileError } = await supabase.from("profiles").update({ full_name: fullName, updated_at: new Date().toISOString() }).eq("id", user.id);
+        if (profileError) throw profileError;
+      }
+      if (fullName) setUser((current) => current ? { ...current, full_name: fullName, user_metadata: { ...(current.user_metadata || {}), full_name: fullName } } : current);
       setAccountEditing(false);
-      setToast(accountEmail.trim() !== user.email ? "Check your email to confirm the new address." : accountPhone.trim() !== user.phone ? "A code was sent to verify your new phone number." : "Account settings updated.");
+      setToast(finishingInitialSetup ? "Account setup complete." : accountEmail.trim() !== user.email ? "Check your email to confirm the new address." : accountPhone.trim() !== user.phone ? "A code was sent to verify your new phone number." : "Account settings updated.");
+      if (finishingInitialSetup) go("Home");
     } catch (error) { setToast(error.message || "Could not update account settings."); }
   };
   const copyReferralCode = async () => {
@@ -1509,7 +1561,7 @@ export default function Page() {
             ["YOUR SPACE", [["Notes", figmaAsset.notes], ["Study Timer", figmaAsset.timer], ["Meditation", figmaAsset.meditation]]],
             ["YOUR GROWTH", [["My Habits", figmaAsset.habits], ["Analytics & Streak", figmaAsset.goal], ["CSR Activity", figmaAsset.social], ["My Profile", figmaAsset.profile]]],
           ].map(([group, items]) => <div className="desktop-nav-group" key={group}><small>{group}</small>{items.map(([item, asset]) => <button key={item} className={`desktop-nav-item ${screen === item || (screen === "Practice" && item === "Home") || (screen === "Mistake List" && item === "Mistake Book") ? "active" : ""}`} onClick={() => go(item)}><img src={asset} alt="" /><span>{item}</span></button>)}</div>)}
-          {user && <button className="desktop-nav-item desktop-admin-link" onClick={() => window.location.assign("/admin")}><span className="desktop-admin-icon" aria-hidden="true">⚙</span><span>Admin panel</span></button>}
+          {user?.role === "admin" && <button className="desktop-nav-item desktop-admin-link" onClick={() => window.location.assign("/admin")}><span className="desktop-admin-icon" aria-hidden="true">⚙</span><span>Admin panel</span></button>}
         </nav>
         <div className="desktop-sidebar-bottom"><span className="desktop-plan-icon">✦</span><span><b>Free plan</b><small>Start with your next question</small></span><i>›</i></div>
       </aside>}
@@ -1526,7 +1578,7 @@ export default function Page() {
       </section>}
       {screen === "Phone Auth" && <Content className="phone-auth-page" title="Continue with phone" subtitle="We’ll text you a one-time verification code." back={() => go("Welcome")} character="happy"><form className="phone-auth-form" onSubmit={sendPhoneCode}><label htmlFor="phone-number">Phone number</label><div className={`phone-number-field ${phoneNumber.replace(/^\+91/, "").length === 10 ? "valid" : ""}`}><span>+91</span><input id="phone-number" type="tel" inputMode="numeric" autoComplete="tel-national" value={phoneNumber.replace(/^\+91/, "").replace(/^(\d{5})(\d{5})$/, "$1 $2")} onChange={(event) => { let digits = event.target.value.replace(/\D/g, ""); if (digits.startsWith("0091") && digits.length > 10) digits = digits.slice(4); else if (digits.startsWith("91") && digits.length > 10) digits = digits.slice(2); else if (digits.startsWith("0") && digits.length === 11) digits = digits.slice(1); setPhoneNumber(`+91${digits.slice(0, 10)}`); }} placeholder="Enter 10-digit phone number" required /></div><div id="recaptcha-container" /><small>Firebase will text a verification code. Test numbers work only when configured in Firebase Authentication.</small><button className="primary-button full-button" type="submit" disabled={phoneBusy || phoneNumber.replace(/^\+91/, "").length !== 10}>{phoneBusy ? "Sending code…" : "Send verification code"}</button><small className="phone-security-note"><span aria-hidden="true">♢</span> Your number is used to secure your account.</small></form></Content>}
       {screen === "Verify Phone" && <Content className="phone-auth-page verify-phone-page" title={phoneBusy ? "Verifying your number" : "Verify your number"} subtitle={phoneBusy ? "Securely checking your one-time code." : `Enter the 6-digit code sent to ${formatIndianPhone(phoneNumber)}.`} back={() => go("Phone Auth")}><form className="phone-auth-form verify-phone-form" onSubmit={verifyPhoneCode}><label htmlFor="phone-code">Verification code</label><div className={`otp-code-boxes ${phoneOtpError ? "error" : ""}`} onClick={() => document.getElementById("phone-code")?.focus()}><input id="phone-code" type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={phoneCode} onChange={(event) => { setPhoneCode(event.target.value.replace(/\D/g, "").slice(0, 6)); setPhoneOtpError(false); }} aria-label="Six-digit verification code" disabled={phoneBusy} /><div aria-hidden="true">{Array.from({length:6},(_,index)=><span key={index} className={index === phoneCode.length && !phoneOtpError ? "active" : ""}>{phoneCode[index] || ""}</span>)}</div></div>{phoneOtpError && <small className="otp-error" role="alert">{phoneOtpErrorMessage}</small>}<button className="primary-button full-button" type="submit" disabled={phoneBusy || phoneCode.length !== 6}>{phoneBusy && <span className="auth-spinner" aria-hidden="true" />}{phoneBusy ? "Verifying…" : "Verify & Continue"}</button></form><button className="wrong-number-link" onClick={() => { setPhoneCode(""); setPhoneOtpError(false); setPhoneOtpErrorMessage("Incorrect code. Check the code and try again."); go("Phone Auth"); }}>Wrong number? <span>Change phone number</span></button><button className="resend-code-link" onClick={resendPhoneCode} disabled={phoneResendCountdown > 0 || phoneBusy}>{phoneResendCountdown > 0 ? `Resend code in ${formatTime(phoneResendCountdown)}` : "Didn’t get the code? Resend OTP"}</button></Content>}
-      {screen === "Phone Verified" && <section className="phone-verified-page"><div className="phone-verified-content"><div className="phone-verified-mascot" aria-hidden="true"><Lottie src="/mascot-lottie/cloudy-happy-jump.json" autoplay loop /></div><h1>Phone verified!</h1><p>Your phone number has been verified successfully.</p></div><button className="primary-button full-button" onClick={() => go(hasCompletedOnboarding(user) ? "Home" : "About You")}>Continue</button></section>}
+      {screen === "Phone Verified" && <section className="phone-verified-page"><div className="phone-verified-content"><div className="phone-verified-mascot" aria-hidden="true"><Lottie src="/mascot-lottie/cloudy-happy-jump.json" autoplay loop /></div><h1>Phone verified!</h1><p>Your phone number has been verified successfully.</p></div><button className="primary-button full-button" onClick={() => { const landingScreen = authenticatedLandingScreen(user); if (landingScreen === "Account Settings") setAccountEditing(true); go(landingScreen); }}>Continue</button></section>}
       {screen === "Home" && <header className="topbar">
         <button className="icon-button" aria-label="Open menu" onClick={() => setDrawer(true)}><img src={figmaAsset.menu} alt="" /></button>
         <div className="brand-word"><img src="/brand/cloud-ai-logo.png" alt="" /><span className="brand-title"><span>PYQ</span> <em>Cloud</em></span></div>
@@ -1712,7 +1764,7 @@ export default function Page() {
 
       {screen === "Subscription" && <Content className="membership-page" title="Manage Membership" subtitle="" back={() => go("My Profile")}><div className="membership-active"><span aria-hidden="true">♛</span><div><small>You’re on</small><b>{user?.user_metadata?.membership_plan ? `${user.user_metadata.membership_plan} Plan` : "Free Plan"}</b>{user?.user_metadata?.membership_ends_at && <small>Your membership ends on {new Date(user.user_metadata.membership_ends_at).toLocaleDateString("en-GB", {day:"numeric",month:"short",year:"numeric"})}</small>}</div>{user?.user_metadata?.membership_plan && <i>Premium</i>}</div><h2 className="membership-section-label">Choose a Plan</h2><div className="membership-options">{[["Monthly", "₹79", "per month"], ["Quarterly", "₹199", "for 3 months"], ["Yearly", "₹699", "for 12 months"]].map(([name, price, period]) => <button type="button" key={name} className={`membership-option ${membershipChoice === name ? "selected" : ""}`} aria-pressed={membershipChoice === name} onClick={() => setMembershipChoice(name)}><span className="membership-radio" /><span className="membership-plan-copy"><b>{name} Plan</b><small>You get everything in the app<br />(PYQs, notes, tests, explanations, etc.)</small></span><strong>{price}<small>{period}</small></strong></button>)}</div><section className="payment-history"><div><h2>Payment History</h2><button onClick={() => setToast("No payments have been recorded yet.")}>View All</button></div><p>No payments yet</p></section><button className="membership-support" onClick={() => setToast("Subscription support contact will be available when the client provides the support number.")}><span aria-hidden="true">◉</span><span><b>Need help with your subscription?</b><small>Contact us on WhatsApp</small></span><i>›</i></button></Content>}
 
-      {screen === "Admin" && <Content title="Admin overview" subtitle="Manage the PYQ Cloud experience" back={() => go("Home")}><Empty icon="⚙" title="Open the admin workspace" text="Question management is available in the secure web admin panel." /><button className="primary-button full-button" onClick={() => window.location.assign("/admin")}>Open admin panel <span>→</span></button></Content>}
+      {screen === "Admin" && user?.role === "admin" && <Content title="Admin overview" subtitle="Manage the PYQ Cloud experience" back={() => go("Home")}><Empty icon="⚙" title="Open the admin workspace" text="Question management is available in the secure web admin panel." /><button className="primary-button full-button" onClick={() => window.location.assign("/admin")}>Open admin panel <span>→</span></button></Content>}
 
       {(screen === "Home" || screen === "Bookmarks") && <nav className="bottom-nav" aria-label="Main navigation">{navItems.map((item) => { const active = screen === item || (screen === "Practice" && item === "Home"); return <button className={active ? "active" : ""} aria-current={active ? "page" : undefined} key={item} onClick={() => go(item)}><span className="nav-icon" style={{ "--nav-icon": `url(${figmaAsset[item.toLowerCase()]})` }} aria-hidden="true" /><small>{item}</small></button>; })}</nav>}
       {drawer && <div className="drawer-backdrop" onClick={() => setDrawer(false)}><aside className="drawer" onClick={(e) => e.stopPropagation()}>
@@ -1725,7 +1777,7 @@ export default function Page() {
           ["Meditation", figmaAsset.meditation, "Breathe in and let it go :)"],
           ["My Habits", figmaAsset.habits, "Stay consistent with your goals."],
           ["Social Impact", figmaAsset.social, "Your learning makes a difference."],
-        ].map(([item, asset, subtitle]) => <button className={`drawer-menu-item ${screen === item || (item === "Social Impact" && screen === "CSR Activity") ? "active" : ""}`} key={item} onClick={() => item === "Social Impact" ? go("CSR Activity") : go(item)}><span className="drawer-menu-icon"><img src={asset} alt="" /></span><span className="drawer-menu-copy"><b>{item}</b><small>{subtitle}</small></span><i>›</i></button>)}{!isInstalledApp && <button className="drawer-menu-item" onClick={() => { setDrawer(false); installApp(); }}><span className="drawer-menu-icon" aria-hidden="true">↓</span><span className="drawer-menu-copy"><b>Install app</b><small>Add PYQ Cloud to your home screen.</small></span><i>›</i></button>}{user && <button className="drawer-menu-item" onClick={() => window.location.assign("/admin")}><span className="drawer-menu-icon" aria-hidden="true">⚙</span><span className="drawer-menu-copy"><b>Admin panel</b><small>Manage the question bank.</small></span><i>›</i></button>}</div>
+        ].map(([item, asset, subtitle]) => <button className={`drawer-menu-item ${screen === item || (item === "Social Impact" && screen === "CSR Activity") ? "active" : ""}`} key={item} onClick={() => item === "Social Impact" ? go("CSR Activity") : go(item)}><span className="drawer-menu-icon"><img src={asset} alt="" /></span><span className="drawer-menu-copy"><b>{item}</b><small>{subtitle}</small></span><i>›</i></button>)}{!isInstalledApp && <button className="drawer-menu-item" onClick={() => { setDrawer(false); installApp(); }}><span className="drawer-menu-icon" aria-hidden="true">↓</span><span className="drawer-menu-copy"><b>Install app</b><small>Add PYQ Cloud to your home screen.</small></span><i>›</i></button>}{user?.role === "admin" && <button className="drawer-menu-item" onClick={() => window.location.assign("/admin")}><span className="drawer-menu-icon" aria-hidden="true">⚙</span><span className="drawer-menu-copy"><b>Admin panel</b><small>Manage the question bank.</small></span><i>›</i></button>}</div>
       </aside></div>}
       {showEndPracticeDialog && <div className="test-overlay practice-exit-overlay" role="presentation" onClick={() => setShowEndPracticeDialog(false)}><section className="test-dialog practice-exit-dialog" role="dialog" aria-modal="true" aria-labelledby="end-practice-title" onClick={(event) => event.stopPropagation()}><header><div><h2 id="end-practice-title">{testInProgress ? "End this test?" : "End this practice?"}</h2><p>{testInProgress ? "Your test session will end and you’ll return to the previous screen." : "Your current practice will end and you’ll return to the previous screen."}</p></div></header><div className="submit-test-actions"><button className="ghost-button" onClick={() => setShowEndPracticeDialog(false)}>No, continue</button><button className="primary-button" onClick={confirmEndPractice}>{testInProgress ? "Yes, end test" : "Yes, end practice"}</button></div></section></div>}
       {toast && <div className="toast" role="status">{toast}</div>}
