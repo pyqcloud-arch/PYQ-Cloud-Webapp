@@ -6,6 +6,8 @@ if ("serviceWorker" in navigator) {
       await Promise.all(registrations.map((registration) => registration.unregister()));
       return;
     }
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
+    navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" })
+      .then((registration) => registration.update())
+      .catch(() => {});
   });
 }

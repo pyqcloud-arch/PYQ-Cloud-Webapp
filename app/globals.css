@@ -2702,3 +2702,14 @@ html, body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", 
 #questions,#catalog,#users{scroll-margin-top:18px}
 @media(max-width:900px){.admin-sidebar{flex-direction:row;align-items:center;overflow-x:auto;scrollbar-width:thin}.admin-sidebar button{width:auto;flex:none;white-space:nowrap;padding:10px 12px}.admin-question-pagination-controls{flex-wrap:wrap}}
 
+/* iPad installed apps use the full safe viewport instead of a phone mockup. */
+@media (min-width: 601px) and (display-mode: standalone), (min-width: 601px) and (display-mode: fullscreen) {
+  html, body { width:100%; height:100%; min-height:100dvh; overflow:hidden; }
+  .app-shell {
+    width:100%; height:100dvh; min-height:100dvh; padding:env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+    align-items:stretch; justify-content:stretch; overflow:hidden;
+  }
+  .phone-screen { width:100%; max-width:none; height:100%; min-height:0; border:0; border-radius:0; box-shadow:none; }
+  .phone-screen:has(.welcome-flow) { height:100%; min-height:0; }
+}
+

@@ -231,6 +231,24 @@ const supabase = createClient();
 const usesFirebaseAuth = () => Boolean(process.env.NEXT_PUBLIC_FIREBASE_API_KEY);
 const wait = (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
+async function fetchAllQuestions() {
+  const rows = [];
+  const pageSize = 1000;
+  let offset = 0;
+  while (true) {
+    const { data, error } = await supabase.from("questions")
+      .select("id, subject, year, topic, prompt, options, correct_option, explanation, question_number")
+      .order("year", { ascending: false }).order("question_number", { ascending: true, nullsFirst: false }).order("id", { ascending: true })
+      .range(offset, offset + pageSize - 1);
+    if (error) throw error;
+    const page = data || [];
+    if (!page.length) break;
+    rows.push(...page);
+    offset += page.length;
+  }
+  return rows.map((item) => ({ ...item, year: String(item.year), tag: item.topic, answer: item.correct_option }));
+}
+
 async function getSupabaseProfileRole(userId) {
   try {
     const { data, error } = await supabase.from("profiles").select("role").eq("id", userId).maybeSingle();
@@ -827,24 +845,9 @@ export default function Page() {
       });
       authListener = data;
     }
-    const databaseQuestions = (async () => {
-      const rows = [];
-      const pageSize = 1000;
-      for (let offset = 0; ; offset += pageSize) {
-        const { data, error } = await supabase.from("questions")
-          .select("id, subject, year, topic, prompt, options, correct_option, explanation, question_number")
-          .order("year", { ascending: false }).order("question_number", { ascending: true, nullsFirst: false })
-          .range(offset, offset + pageSize - 1);
-        if (error) throw error;
-        rows.push(...(data || []));
-        if ((data || []).length < pageSize) break;
-      }
-      return { data: rows, error: null };
-    })();
-    databaseQuestions.then((databaseResult) => {
+    fetchAllQuestions().then((questionRows) => {
       if (!active) return;
-      const supabaseRows = databaseResult.data || [];
-      setQuestions(supabaseRows.map((item) => ({ ...item, year: String(item.year), tag: item.topic, answer: item.correct_option })));
+      setQuestions(questionRows);
     }).catch((error) => {
       if (!active) return;
       console.error("Could not load questions from Supabase", error);
@@ -899,19 +902,9 @@ export default function Page() {
     let active = true;
     const refreshQuestionBank = async () => {
       try {
-        const rows = [];
-        const pageSize = 1000;
-        for (let offset = 0; ; offset += pageSize) {
-          const { data, error } = await supabase.from("questions")
-            .select("id, subject, year, topic, prompt, options, correct_option, explanation, question_number")
-            .order("year", { ascending: false }).order("question_number", { ascending: true, nullsFirst: false })
-            .range(offset, offset + pageSize - 1);
-          if (error) throw error;
-          rows.push(...(data || []));
-          if ((data || []).length < pageSize) break;
-        }
+        const rows = await fetchAllQuestions();
         if (active) {
-          setQuestions(rows.map((item) => ({ ...item, year: String(item.year), tag: item.topic, answer: item.correct_option })));
+          setQuestions(rows);
         }
       } catch (error) {
         console.error("Could not refresh the question bank", error);
@@ -920,12 +913,15 @@ export default function Page() {
     const onReturn = () => {
       if (document.visibilityState === "visible") refreshQuestionBank();
     };
+    const onPageShow = (event) => { if (event.persisted) onReturn(); };
     window.addEventListener("focus", onReturn);
     document.addEventListener("visibilitychange", onReturn);
+    window.addEventListener("pageshow", onPageShow);
     return () => {
       active = false;
       window.removeEventListener("focus", onReturn);
       document.removeEventListener("visibilitychange", onReturn);
+      window.removeEventListener("pageshow", onPageShow);
     };
   }, []);
   useEffect(() => {

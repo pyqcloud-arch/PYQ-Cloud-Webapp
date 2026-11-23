@@ -1,4 +1,4 @@
-const CACHE_NAME = "pyq-cloud-shell-v6";
+const CACHE_NAME = "pyq-cloud-shell-v7";
 const APP_SHELL = [
   "/",
   "/manifest.json",

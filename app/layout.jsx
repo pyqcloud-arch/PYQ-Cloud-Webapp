@@ -23,5 +23,5 @@ export const viewport = {
 };
 
 export default function RootLayout({ children }) {
-  return <html lang="en"><body>{children}<script src="/register-sw.js?v=4" defer /></body></html>;
+  return <html lang="en"><body>{children}<script src="/register-sw.js?v=6" defer /></body></html>;
 }

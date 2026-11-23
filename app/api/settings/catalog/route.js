@@ -4,6 +4,24 @@ import { createClient } from "@supabase/supabase-js";
 export const dynamic = "force-dynamic";
 const response = (value) => NextResponse.json(value, { headers: { "Cache-Control": "no-store" } });
 
+async function loadQuestionCatalogRows(database) {
+  const rows = [];
+  const pageSize = 1000;
+  let offset = 0;
+  while (true) {
+    const { data, error } = await database.from("questions")
+      .select("id, subject, year")
+      .order("id", { ascending: true })
+      .range(offset, offset + pageSize - 1);
+    if (error) return { data: null, error };
+    const page = data || [];
+    if (!page.length) break;
+    rows.push(...page);
+    offset += page.length;
+  }
+  return { data: rows, error: null };
+}
+
 export async function GET() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
@@ -11,7 +29,7 @@ export async function GET() {
   const database = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
   const [settingsResult, questionsResult] = await Promise.all([
     database.from("app_settings").select("value").eq("key", "catalog").maybeSingle(),
-    database.from("questions").select("subject, year").range(0, 9999),
+    loadQuestionCatalogRows(database),
   ]);
   if (settingsResult.error || questionsResult.error) return NextResponse.json({ error: "Could not load the practice catalogue from Supabase." }, { status: 503, headers: { "Cache-Control": "no-store" } });
   const saved = settingsResult.data?.value || {};
