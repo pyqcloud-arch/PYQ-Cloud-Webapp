@@ -1,11 +1,11 @@
-const CACHE_NAME = "pyq-cloud-shell-v5";
+const CACHE_NAME = "pyq-cloud-shell-v6";
 const APP_SHELL = [
   "/",
   "/manifest.json",
-  "/icon.svg",
-  "/icons/icon-192.png",
-  "/icons/icon-512.png",
-  "/icons/apple-touch-icon.png",
+  "/icons/pyq-cloud-icon-v2-192.png",
+  "/icons/pyq-cloud-icon-v2-512.png",
+  "/icons/pyq-cloud-icon-v2-maskable-512.png",
+  "/icons/pyq-cloud-apple-icon-v2.png",
 ];
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
