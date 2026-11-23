@@ -2702,6 +2702,101 @@ html, body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", 
 #questions,#catalog,#users{scroll-margin-top:18px}
 @media(max-width:900px){.admin-sidebar{flex-direction:row;align-items:center;overflow-x:auto;scrollbar-width:thin}.admin-sidebar button{width:auto;flex:none;white-space:nowrap;padding:10px 12px}.admin-question-pagination-controls{flex-wrap:wrap}}
 
+/* Full desktop treatments for screens whose detailed styling is phone-only. */
+@media (min-width: 1200px) {
+  .tests-page.content-page { padding: 34px clamp(42px,5vw,84px) 64px; }
+  .tests-page .content-body { display:grid; grid-template-columns:repeat(2,minmax(360px,1fr)); align-items:start; gap:22px 24px; max-width:1180px; }
+  .tests-page .page-heading { grid-column:1/-1; display:flex; align-items:center; min-height:76px; margin:0 0 2px; }
+  .tests-page .page-heading h1 { font-size:30px; line-height:1.2; letter-spacing:-.5px; }
+  .tests-page .page-heading p { margin-top:7px; color:var(--secondary); font-size:15px; }
+  .tests-page .test-config-card { display:flex; flex-direction:column; min-width:0; min-height:350px; padding:24px; border:1px solid #292d3c; border-radius:18px; background:linear-gradient(145deg,#161824,#10121b); box-shadow:0 14px 32px #0003; }
+  .tests-page .test-config-heading { display:flex; align-items:center; gap:13px; margin:0 0 14px; }
+  .tests-page .test-config-icon { display:grid; place-items:center; width:46px; height:46px; flex:none; border:1px solid #39265d; border-radius:13px; background:#241a3e; color:var(--purple-light); font-size:21px; }
+  .tests-page .test-config-heading>div { display:flex; flex-direction:column; gap:5px; min-width:0; }
+  .tests-page .test-config-heading b { font-size:18px; line-height:24px; font-weight:600; }
+  .tests-page .test-config-heading small { color:var(--secondary); font-size:13px; line-height:19px; }
+  .tests-page .test-mode-tags { display:flex; align-items:center; gap:8px; min-height:25px; margin:0 0 20px; padding-left:59px; }
+  .tests-page .test-mode-tags span { padding:5px 9px; border-radius:999px; background:#241b38; color:#d0b4ff; font-size:12px; line-height:16px; white-space:nowrap; }
+  .tests-page .test-mode-tags span:first-child { padding-left:0; background:transparent; }
+  .tests-page .test-config-card label { display:block; margin:0 0 7px; color:#c3c5d0; font-size:13px; }
+  .tests-page .test-config-card select { width:100%; min-height:48px; padding:0 13px; border:1px solid #303446; border-radius:10px; background:#11141e; color:var(--text); color-scheme:dark; font:inherit; font-size:14px; }
+  .tests-page .test-config-card .primary-button { width:100%; min-height:49px; margin-top:auto; border-radius:10px; font-size:14px; }
+  .tests-page .test-subject-card .test-config-heading { margin-bottom:18px; }
+  .tests-page .test-subject-card .question-count-label { margin-top:18px; }
+  .tests-page .test-count-options { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:9px; }
+  .tests-page .test-count-options button { position:relative; min-width:0; height:44px; border:1px solid #303446; border-radius:9px; background:#11141e; color:#c6c8d3; font-size:13px; }
+  .tests-page .test-count-options button:hover { border-color:#7051a5; background:#1a1725; }
+  .tests-page .test-count-options button.selected { border-color:var(--purple-light); background:#251b3a; color:#e0ccff; }
+  .tests-page .test-count-options button.selected::after { content:"✓"; position:absolute; top:-7px; right:-6px; display:grid; place-items:center; width:17px; height:17px; border-radius:50%; background:#f7f3ff; color:#7438e5; font-size:11px; font-weight:800; }
+  .tests-page .test-time-note { display:flex; align-items:center; gap:7px; min-height:20px; margin:12px 0 14px; color:var(--tertiary); font-size:12px; }
+  .tests-page .test-history-heading { grid-column:1/-1; display:flex; align-items:center; justify-content:space-between; margin:10px 0 -8px; }
+  .tests-page .test-history-heading h2 { margin:0; font-size:21px; font-weight:600; }
+  .tests-page .test-history-heading button { border:0; background:transparent; color:var(--purple-light); font-size:13px; }
+  .tests-page .test-history-list,.tests-page .test-history-empty { grid-column:1/-1; }
+  .tests-page .test-history-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+  .tests-page .test-history-item { min-width:0; min-height:76px; padding:15px 17px; border:1px solid #292d3c; border-radius:13px; background:#12141e; }
+  .tests-page .test-history-item b { font-size:14px; }
+  .tests-page .test-history-item small { font-size:12px; }
+  .tests-page .test-history-item strong { font-size:14px; }
+  .tests-page .test-history-empty { padding:20px; border:1px solid #292d3c; border-radius:13px; color:var(--secondary); font-size:13px; }
+
+  .meditation-page.content-page { position:relative; padding:34px clamp(42px,5vw,84px) 60px; }
+  .meditation-page .content-body { display:grid; grid-template-columns:minmax(360px,.92fr) minmax(360px,1.08fr); align-content:start; align-items:center; gap:24px 42px; max-width:1120px; }
+  .meditation-page .page-heading { grid-column:1/-1; min-height:54px; margin:0; }
+  .meditation-page .page-heading h1 { font-size:28px; }
+  .meditation-page .meditation-sound { position:absolute; top:34px; right:clamp(42px,5vw,84px); z-index:2; display:grid; place-items:center; width:42px; height:42px; padding:0; border:1px solid #33364a; border-radius:12px; background:#171a27; color:var(--purple-light); font-size:20px; }
+  .meditation-page .meditation-sound:hover { border-color:#7957b1; background:#211a31; }
+  .meditation-intro { grid-column:1/-1; display:flex; align-items:center; justify-content:space-between; min-height:100px; padding:18px 24px; border:1px solid #292d3c; border-radius:16px; background:linear-gradient(115deg,#181626,#11141d); }
+  .meditation-intro>div { flex:1; min-width:0; }
+  .meditation-intro p { margin:0 0 8px; font-size:20px; line-height:1.35; }
+  .meditation-intro p b { color:var(--purple-light); font-weight:600; }
+  .meditation-intro small { display:block; color:var(--secondary); font-size:14px; line-height:1.5; }
+  .meditation-intro .meditation-mascot { width:110px; height:90px; }
+  .meditation-card { display:flex; flex-direction:column; align-items:center; min-width:0; min-height:590px; padding:24px; border:1px solid #292d3c; border-radius:18px; background:linear-gradient(150deg,#151622,#10121b); box-shadow:0 15px 35px #0003; }
+  .meditation-time-label { display:flex; align-items:center; justify-content:center; gap:12px; width:100%; color:#c8a8ff; font-size:14px; }
+  .meditation-time-label span { width:64px; height:1px; background:#44315f; }
+  .meditation-ring { position:relative; display:grid; place-items:center; width:clamp(300px,27vw,390px); height:clamp(300px,27vw,390px); margin:24px 0 20px; padding:10px; border-radius:50%; background:conic-gradient(from -90deg,#8a3cff 0deg var(--progress-angle,360deg),#252236 var(--progress-angle,360deg) 360deg); box-shadow:0 0 28px #7c3bff2c; }
+  .meditation-ring::after { content:""; position:absolute; z-index:3; top:50%; left:50%; width:12px; height:12px; border:2px solid #211932; border-radius:50%; background:#b58aff; box-shadow:0 0 12px #9a55ff9c; transform:rotate(var(--progress-angle,360deg)) translateY(clamp(-195px,-13.5vw,-150px)); }
+  .meditation-scene { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; height:100%; overflow:hidden; border-radius:50%; background:#0c0b19 url("/figma-assets-oct-2026/meditation-moon-scene.png") center/100% 100% no-repeat; }
+  .meditation-scene strong { position:relative; z-index:1; margin-top:30px; font-size:40px; line-height:1.2; font-weight:600; letter-spacing:-1.5px; }
+  .meditation-scene small { position:relative; z-index:1; margin-top:6px; color:#d3baff; font-size:14px; }
+  .meditation-presets { display:flex; justify-content:center; gap:12px; width:100%; margin-top:auto; }
+  .meditation-presets button { display:flex; flex-direction:column; align-items:center; justify-content:center; width:78px; height:64px; border:1px solid #303446; border-radius:11px; background:#171a27; }
+  .meditation-presets button b { color:var(--text); font-size:17px; line-height:22px; font-weight:600; }
+  .meditation-presets button small { color:var(--secondary); font-size:12px; }
+  .meditation-presets button.selected { border-color:var(--purple-light); background:#261c3d; box-shadow:0 0 16px #7c3bff24; }
+  .meditation-presets button.selected b { color:#d4b9ff; }
+  .meditation-tip { display:flex; align-items:flex-start; gap:13px; min-height:100px; padding:20px; border:1px solid #292d3c; border-radius:15px; background:#13151f; }
+  .meditation-tip>span { display:grid; place-items:center; flex:none; width:34px; height:34px; border:1px solid #3a2a58; border-radius:10px; background:#241a3e; color:var(--purple-light); font-size:17px; }
+  .meditation-tip p { margin:2px 0 0; color:#c4c6d1; font-size:14px; line-height:1.6; }
+  .meditation-start { grid-column:2; justify-self:stretch; width:100%; min-height:54px; border-radius:12px; font-size:15px; }
+
+  .impact-page.content-page { padding:34px clamp(42px,5vw,84px) 64px; }
+  .impact-page .content-body { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(320px,.8fr); align-content:start; align-items:start; gap:22px 28px; max-width:1120px; }
+  .impact-page .page-heading { grid-column:1/-1; min-height:54px; margin:0; }
+  .impact-page .page-heading h1 { font-size:28px; }
+  .impact-title { grid-column:1/-1; display:flex; align-items:center; gap:14px; margin:8px 0 4px; }
+  .impact-title>span { display:grid; place-items:center; width:52px; height:52px; border:1px solid #39265d; border-radius:15px; background:linear-gradient(145deg,#291c42,#191623); color:#b98bff; font-size:28px; line-height:1; box-shadow:0 8px 20px #7c3bff1b; }
+  .impact-title h1 { margin:0; font-size:30px; line-height:1.2; letter-spacing:-.5px; }
+  .impact-info-card { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:0; padding:12px; border:1px solid #292d3c; border-radius:17px; background:linear-gradient(145deg,#151722,#10121b); }
+  .impact-info-row { display:flex; align-items:flex-start; gap:12px; min-width:0; padding:14px; border-right:1px solid #292d3c; }
+  .impact-info-row:last-child { border:0; }
+  .impact-info-row>span { display:grid; place-items:center; flex:none; width:38px; height:38px; border:1px solid #3b2b5c; border-radius:11px; background:#251b3c; color:#c2a0ff; font-size:17px; }
+  .impact-info-row>div { display:flex; flex-direction:column; gap:8px; min-width:0; }
+  .impact-info-row b { font-size:15px; line-height:1.35; font-weight:600; }
+  .impact-info-row p { margin:0; color:var(--secondary); font-size:13px; line-height:1.55; }
+  .impact-founder-card { position:relative; grid-column:2; grid-row:3/5; padding:27px; border:1px solid #3b3150; border-radius:17px; background:radial-gradient(ellipse at 100% 0,rgba(124,59,255,.14),transparent 52%),#12141e; }
+  .impact-quote-mark { display:block; height:34px; color:#a879ff; font-family:Georgia,serif; font-size:52px; line-height:50px; }
+  .impact-founder-card h2 { margin:0 0 13px; font-size:19px; font-weight:600; }
+  .impact-founder-card p { margin:0; color:#b6b9c7; font-size:14px; line-height:1.75; }
+  .impact-founder-card>div { display:flex; align-items:center; gap:11px; margin-top:22px; padding-top:18px; border-top:1px solid #292d3c; }
+  .impact-founder-card>div>span { color:var(--purple-light); font-size:23px; }
+  .impact-founder-card>div small { display:flex; flex-direction:column; gap:4px; color:var(--secondary); font-size:12px; }
+  .impact-founder-card>div b { color:var(--text); font-size:13px; font-weight:500; }
+  .impact-website-button { grid-column:1; justify-self:start; display:flex; align-items:center; justify-content:center; gap:10px; min-height:48px; margin-top:0; padding:0 18px; border:1px solid #503676; border-radius:10px; background:#1b1727; color:#d1b6ff; font-size:14px; }
+  .impact-website-button:hover { border-color:#9165d2; background:#231b33; }
+}
+
 /* iPad installed apps use the full safe viewport instead of a phone mockup. */
 @media (min-width: 601px) and (display-mode: standalone), (min-width: 601px) and (display-mode: fullscreen) {
   html, body { width:100%; height:100%; min-height:100dvh; overflow:hidden; }
