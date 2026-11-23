@@ -1365,6 +1365,33 @@ export default function Page() {
     if (result.error) return setToast("Bookmark sync failed");
     setBookmarks((value) => saved ? value.filter((item) => item !== question.prompt) : [question.prompt, ...value]);
   };
+  const reportQuestion = async (reportedQuestion) => {
+    if (!user) { setToast("Sign in to report a question."); return false; }
+    if (!reportedQuestion?.id) { setToast("This question is not linked to the question bank and cannot be reported."); return false; }
+    try {
+      let accessToken;
+      if (usesFirebaseAuth()) accessToken = await getFirebaseAuth().currentUser?.getIdToken();
+      else {
+        const { data, error } = await supabase.auth.getSession();
+        if (error) throw error;
+        accessToken = data.session?.access_token;
+      }
+      if (!accessToken) throw new Error("Sign in again to report this question.");
+      const response = await fetch("/api/question-reports", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+        cache: "no-store",
+        body: JSON.stringify({ questionId: reportedQuestion.id }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "Could not send this report.");
+      setToast(result.alreadyReported ? "You already reported this question." : "Question reported for admin review.");
+      return true;
+    } catch (error) {
+      setToast(error.message || "Could not send this report.");
+      return false;
+    }
+  };
   const submitAuth = async (event) => {
     event.preventDefault();
     setAuthError("");
@@ -1826,6 +1853,7 @@ export default function Page() {
         previousQuestion={() => { if (questionIndex === 0) return; setQuestionIndex((index) => Math.max(0, index - 1)); setSelected(null); setAnswerChecked(false); setEliminated([]); }}
         openQuestionPalette={() => setShowQuestionPalette(true)}
         copyQuestion={async () => { await navigator.clipboard?.writeText(question.prompt); setToast("Question copied"); }}
+        reportQuestion={reportQuestion}
         testReviewFlags={testReviewFlags}
         toggleReviewFlag={(index) => setTestReviewFlags((flags) => flags.includes(index) ? flags.filter((item) => item !== index) : [...flags, index])}
         setToast={setToast}
@@ -2004,8 +2032,9 @@ function Content({ title, subtitle, back, children, mascot = false, character = 
     </div>{children}</div>
   </section>;
 }
-function PracticeQuestionScreen({ question, questionIndex, questionCount, subject, testInProgress, seconds, formatTime, practiceElapsedSeconds, bookmarks, selected, displaySelected, answerChecked, eliminated, toggleBookmark, chooseAnswer, eliminateOption, checkAnswer, nextQuestion, previousQuestion, openQuestionPalette, copyQuestion, testReviewFlags, toggleReviewFlag, setToast, setTimerRunning, setTestInProgress, go, requestEndPractice }) {
+function PracticeQuestionScreen({ question, questionIndex, questionCount, subject, testInProgress, seconds, formatTime, practiceElapsedSeconds, bookmarks, selected, displaySelected, answerChecked, eliminated, toggleBookmark, chooseAnswer, eliminateOption, checkAnswer, nextQuestion, previousQuestion, openQuestionPalette, copyQuestion, reportQuestion, testReviewFlags, toggleReviewFlag, setToast, setTimerRunning, setTestInProgress, go, requestEndPractice }) {
   const [showQuestionMenu, setShowQuestionMenu] = useState(false);
+  const [reporting, setReporting] = useState(false);
   const topic = question.topic || question.tag || "General";
   const current = Math.min(questionIndex + 1, questionCount);
   const progress = questionCount ? Math.min(100, (current / questionCount) * 100) : 0;
@@ -2017,7 +2046,7 @@ function PracticeQuestionScreen({ question, questionIndex, questionCount, subjec
   </div>;
   return <Content className={`practice-page${testInProgress ? " test-practice-page" : ""}`} title={testInProgress ? "Test Mode" : "Practice"} subtitle="" headingActions={headingActions} back={requestEndPractice}>
     <button className={`practice-overflow${testInProgress ? " test-mode-options" : ""}`} aria-label={testInProgress ? "Question palette" : "Question options"} aria-expanded={showQuestionMenu} onClick={() => setShowQuestionMenu((visible) => !visible)}>{testInProgress ? <img src="/figma-assets/test-question-grid.png" alt="" /> : <span className="practice-overflow-dots" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2" /><circle cx="12" cy="12" r="2" /><circle cx="12" cy="19" r="2" /></svg></span>}</button>
-    {showQuestionMenu && <div className="practice-question-menu"><button onClick={() => { setShowQuestionMenu(false); setToast("Question reported for review"); }}>Report question</button>{testInProgress && <button onClick={() => { openQuestionPalette(); setShowQuestionMenu(false); }}>Question palette</button>}</div>}
+    {showQuestionMenu && <div className="practice-question-menu"><button disabled={reporting} onClick={async () => { if (reporting) return; setReporting(true); const ok = await reportQuestion(question); setReporting(false); if (ok) setShowQuestionMenu(false); }}>{reporting ? "Sending report…" : "Report question"}</button>{testInProgress && <button onClick={() => { openQuestionPalette(); setShowQuestionMenu(false); }}>Question palette</button>}</div>}
     <div className="practice-progress-block">
       <div className="practice-progress-row"><div className="practice-progress-track"><span style={{ width: `${progress}%` }} /></div><strong>{current}/{questionCount}</strong></div>
       <div className="practice-meta-row"><span>Year: {question.year || "—"}</span><i /><span>Subject: {question.subject || subject}</span><i /><span>Topic: {topic}</span></div>

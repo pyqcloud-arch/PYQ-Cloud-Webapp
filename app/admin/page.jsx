@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { onAuthStateChanged, signOut as firebaseSignOut } from "firebase/auth";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import { createClient } from "../../lib/supabase/client";
-import { getFirebaseAuth } from "../../lib/firebase/client";
+import { getFirebaseApp, getFirebaseAuth } from "../../lib/firebase/client";
 
 const BUILT_IN_MUSIC = [
   { label: "Cloud Focus", url: "/audio/cloud-soft-focus.wav" },
@@ -54,6 +55,10 @@ export default function AdminPage() {
   const [page, setPage] = useState(0);
   const [questionPageSize, setQuestionPageSize] = useState(25);
   const [activeAdminSection, setActiveAdminSection] = useState("questions");
+  const [reports, setReports] = useState([]);
+  const [reportsBusy, setReportsBusy] = useState(false);
+  const [reportsError, setReportsError] = useState("");
+  const [reportFilter, setReportFilter] = useState("open");
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -147,6 +152,39 @@ export default function AdminPage() {
     catch (error) { setNotice(error.message); }
   }, [request]);
 
+  const loadReports = useCallback(async () => {
+    setReportsBusy(true);
+    setReportsError("");
+    try {
+      const result = await request("/api/admin/question-reports");
+      setReports(result.reports || []);
+    } catch (error) { setReportsError(error.message); }
+    finally { setReportsBusy(false); }
+  }, [request]);
+
+  const updateReportStatus = async (report, status) => {
+    setReportsBusy(true);
+    setReportsError("");
+    try {
+      await request(`/api/admin/question-reports?id=${encodeURIComponent(report.id)}`, { method: "PATCH", body: JSON.stringify({ status }) });
+      setNotice(status === "open" ? "Report reopened." : `Report marked ${status}.`);
+      await loadReports();
+    } catch (error) { setReportsError(error.message); }
+    finally { setReportsBusy(false); }
+  };
+
+  const deleteReportedQuestion = async (report) => {
+    if (!report.question?.id) return setReportsError("This reported question is no longer in the question bank.");
+    if (!window.confirm(`Delete this reported question and its linked bookmarks and attempt history?\n\n${report.question.prompt.slice(0, 180)}`)) return;
+    setBusy(true); setReportsError("");
+    try {
+      await request(`/api/admin/questions?id=${encodeURIComponent(report.question.id)}`, { method: "DELETE" });
+      setNotice("Reported question and its linked user history were removed.");
+      await Promise.all([loadQuestions(0), loadReports()]);
+    } catch (error) { setReportsError(error.message); }
+    finally { setBusy(false); }
+  };
+
   const loadUsers = useCallback(async (requestedPage = usersPage, query = userSearch) => {
     setUsersBusy(true);
     setUsersError("");
@@ -228,12 +266,20 @@ export default function AdminPage() {
     if (!window.confirm(`Permanently delete ${user.fullName || user.email || user.phone || "this user"} and their account data? This cannot be undone.`)) return;
     setUsersBusy(true); setUsersError("");
     try {
-      await request(`/api/admin/users?id=${encodeURIComponent(user.id)}`, { method: "DELETE" });
+      if (user.firebaseUid && usesFirebaseAuth) {
+        const deleteFirebaseUser = httpsCallable(getFunctions(getFirebaseApp(), "us-central1"), "adminDeleteFirebaseUser");
+        await deleteFirebaseUser({ profileId: user.id });
+      } else {
+        await request(`/api/admin/users?id=${encodeURIComponent(user.id)}`, { method: "DELETE" });
+      }
       setNotice("User account deleted.");
       await loadUsers(usersPage, userSearch);
     } catch (error) { setUsersError(error.message); }
     finally { setUsersBusy(false); }
   };
+
+  const visibleReports = reportFilter === "all" ? reports : reports.filter((report) => report.status === reportFilter);
+  const openReportCount = reports.filter((report) => report.status === "open").length;
 
   useEffect(() => {
     let active = true;
@@ -253,6 +299,7 @@ export default function AdminPage() {
           await loadQuestions(0, true);
           await loadCatalog();
           await loadHomeNote();
+          await loadReports();
         } catch {
           if (active) {
             setStatus("blocked");
@@ -268,12 +315,12 @@ export default function AdminPage() {
       if (!data.session) {
         setStatus("blocked");
         setAuthError("Sign in with an authorized admin account to manage questions.");
-      } else { loadQuestions(0, true); loadCatalog(); loadHomeNote(); }
+      } else { loadQuestions(0, true); loadCatalog(); loadHomeNote(); loadReports(); }
     }).catch(() => {
       if (active) { setStatus("blocked"); setAuthError("Could not verify the current session. Please sign in again."); }
     });
     return () => { active = false; };
-  }, [loadQuestions, loadCatalog, loadHomeNote, supabase, usesFirebaseAuth]);
+  }, [loadQuestions, loadCatalog, loadHomeNote, loadReports, supabase, usesFirebaseAuth]);
 
   useEffect(() => { fetch("/api/settings/music", { cache: "no-store" }).then((response) => response.ok ? response.json() : null).then((settings) => { if (settings) setMusicSettings(settings); }).catch(() => {}); }, []);
 
@@ -340,7 +387,7 @@ export default function AdminPage() {
   };
 
   const removeQuestion = async (question) => {
-    if (!window.confirm(`Remove this question? If students have bookmarked or attempted it, removal will be blocked to protect their records.\n\n${question.prompt.slice(0, 180)}`)) return;
+    if (!window.confirm(`Permanently remove this question? Student bookmarks and attempt history linked to it will also be removed.\n\n${question.prompt.slice(0, 180)}`)) return;
     setBusy(true);
     setNotice("");
     try {
@@ -376,10 +423,15 @@ export default function AdminPage() {
   return <main className="admin-screen">
     <header className="admin-topbar"><a href="/" className="admin-brand">PYQ <span>CLOUD</span></a><div className="admin-topbar-actions"><span>{session?.user?.email || session?.user?.phone}</span><button className="admin-button secondary" onClick={() => window.location.assign("/")}>Back to app</button></div></header>
     <div className="admin-layout">
-      <aside className="admin-sidebar" aria-label="Admin sections"><small>WORKSPACE</small>{[["questions", "Question bank"], ["catalog", "Subjects & years"], ["users", "User accounts"], ["home-note", "Home note"]].map(([sectionId, label]) => <button type="button" className={activeAdminSection === sectionId ? "active" : ""} key={sectionId} onClick={() => navigateAdminSection(sectionId)}>{label}</button>)}<span>Signed in as admin</span></aside>
+      <aside className="admin-sidebar" aria-label="Admin sections"><small>WORKSPACE</small>{[["questions", "Question bank"], ["reports", "Question reports"], ["catalog", "Subjects & years"], ["users", "User accounts"], ["home-note", "Home note"]].map(([sectionId, label]) => <button type="button" className={activeAdminSection === sectionId ? "active" : ""} key={sectionId} onClick={() => navigateAdminSection(sectionId)}>{label}{sectionId === "reports" && reports.filter((report) => report.status === "open").length > 0 && <span className="admin-nav-count">{reports.filter((report) => report.status === "open").length}</span>}</button>)}<span>Signed in as admin</span></aside>
       <section className="admin-content">
-        <div className="admin-heading"><div><span className="admin-eyebrow">ADMINISTRATION</span><h1>Question bank</h1><p>Add questions manually or import a validated JSON question set into Supabase.</p></div><div className="admin-count"><strong>{questionCount.toLocaleString()}</strong><span>questions</span></div></div>
+        <div className="admin-heading"><div><span className="admin-eyebrow">PYQ CLOUD · CONTROL CENTER</span><h1>Admin workspace</h1><p>Manage the question bank, moderation queue, practice catalogue and user access.</p></div><div className="admin-heading-actions"><span className="admin-live-indicator"><i /> Connected to Supabase</span><div className="admin-count"><strong>{questionCount.toLocaleString()}</strong><span>questions in bank</span></div></div></div>
         {notice && <div className="admin-notice" role="status">{notice}<button aria-label="Dismiss message" onClick={() => setNotice("")}>×</button></div>}
+        <div className="admin-overview-grid" aria-label="Admin workspace overview">
+          <button className="admin-overview-card questions" type="button" onClick={() => navigateAdminSection("questions")}><span className="admin-overview-icon">▤</span><span><small>QUESTION BANK</small><b>{questionCount.toLocaleString()}</b><em>Questions managed</em></span><i>↗</i></button>
+          <button className={`admin-overview-card reports${openReportCount ? " attention" : ""}`} type="button" onClick={() => { setReportFilter("open"); navigateAdminSection("reports"); }}><span className="admin-overview-icon">⚑</span><span><small>NEEDS REVIEW</small><b>{openReportCount}</b><em>Open question reports</em></span><i>↗</i></button>
+          <button className="admin-overview-card catalogue" type="button" onClick={() => navigateAdminSection("catalog")}><span className="admin-overview-icon">⌑</span><span><small>PRACTICE CATALOGUE</small><b>{(catalog.subjects || []).filter((item) => item.active).length} <small>subjects</small></b><em>{(catalog.years || []).filter((item) => item.active).length} active years</em></span><i>↗</i></button>
+        </div>
         <div className="admin-work-grid">
           <section className="admin-card admin-import-card"><div className="admin-card-heading"><span className="admin-card-icon">⇧</span><div><h2>Import a question file</h2><p>Upload a validated JSON or CSV question set.</p></div></div>
             <label className="admin-file-picker">Choose a JSON or CSV file<input type="file" accept="application/json,.json,text/csv,.csv" onChange={(event) => readQuestionFile(event.target.files?.[0])} /></label>
@@ -408,6 +460,12 @@ export default function AdminPage() {
           <form className="admin-filters" onSubmit={(event) => { event.preventDefault(); setAppliedFilters(filters); loadQuestions(0, false, filters); }}><input aria-label="Search questions or topics" placeholder="Search question, topic or exam" value={filters.q} onChange={(event) => setFilters({ ...filters, q: event.target.value })} /><input aria-label="Filter by subject" placeholder="Subject" value={filters.subject} onChange={(event) => setFilters({ ...filters, subject: event.target.value })} /><input aria-label="Filter by year" placeholder="Year" inputMode="numeric" maxLength={4} value={filters.year} onChange={(event) => setFilters({ ...filters, year: event.target.value.replace(/\D/g, "").slice(0, 4) })} /><button className="admin-button primary" type="submit" disabled={loading}>Apply filters</button><button className="admin-button secondary" type="button" onClick={() => { const empty = { q: "", subject: "", year: "" }; setFilters(empty); setAppliedFilters(empty); loadQuestions(0, false, empty); }}>Clear</button></form>
           {questions.length ? <div className="admin-table-wrap"><table><thead><tr><th>Question / practice set</th><th>Subject</th><th>Year</th><th>Actions</th></tr></thead><tbody>{questions.map((question) => <tr key={question.id}><td><b>{question.question_number ? `#${question.question_number} ` : ""}{question.prompt}</b><small>{question.exam} · {question.topic}</small></td><td>{question.subject}</td><td>{question.year}</td><td><div className="admin-row-actions"><button className="admin-edit-button" disabled={busy} onClick={() => editQuestion(question)}>Edit</button><button className="admin-remove-button" disabled={busy} onClick={() => removeQuestion(question)}>Remove</button></div></td></tr>)}</tbody></table></div> : <div className="admin-empty">{loading ? "Loading questions…" : "No questions match these filters."}</div>}
           <div className="admin-pagination"><span>Showing {questionCount ? (page * questionPageSize) + 1 : 0}–{Math.min((page + 1) * questionPageSize, questionCount)} of {questionCount.toLocaleString()} questions</span><div className="admin-question-pagination-controls"><label>Per page<select aria-label="Questions per page" value={questionPageSize} disabled={loading} onChange={(event) => { const nextSize = Number(event.target.value); setQuestionPageSize(nextSize); loadQuestions(0, false, appliedFilters, nextSize); }}><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option></select></label><button className="admin-button secondary" disabled={page === 0 || loading} onClick={() => loadQuestions(page - 1)}>Previous</button><button className="admin-button secondary" disabled={(page + 1) * questionPageSize >= questionCount || loading} onClick={() => loadQuestions(page + 1)}>Next</button></div></div>
+        </section>
+
+        <section className="admin-card admin-reports-card" id="reports"><div className="admin-list-heading"><div><span className="admin-eyebrow">MODERATION QUEUE · {openReportCount} OPEN</span><h2>Question reports</h2><p>Reports submitted from the question menu appear here. Review, dismiss, or remove a question from the bank.</p></div><button className="admin-button secondary" onClick={loadReports} disabled={reportsBusy}>{reportsBusy ? "Refreshing…" : "Refresh reports"}</button></div>
+          {reportsError && <p className="admin-field-error" role="alert">{reportsError}</p>}
+          <div className="admin-report-toolbar"><div className="admin-report-filters" role="tablist" aria-label="Filter question reports">{[["open", `Open · ${openReportCount}`], ["resolved", `Resolved · ${reports.filter((report) => report.status === "resolved").length}`], ["dismissed", `Dismissed · ${reports.filter((report) => report.status === "dismissed").length}`], ["all", `All · ${reports.length}`]].map(([value, label]) => <button type="button" role="tab" aria-selected={reportFilter === value} className={reportFilter === value ? "active" : ""} key={value} onClick={() => setReportFilter(value)}>{label}</button>)}</div><span>{reports.length} total reports</span></div>
+          {visibleReports.length ? <div className="admin-report-list">{visibleReports.map((report) => <article className={`admin-report-row ${report.status}`} key={report.id}><div className="admin-report-status"><span className={`admin-report-pill ${report.status}`}>{report.status}</span><time dateTime={report.created_at}>{new Date(report.created_at).toLocaleString()}</time></div><div className="admin-report-question"><b>{report.question?.prompt || "Question was deleted"}</b><small>{report.question ? `${report.question.subject} · ${report.question.year} · ${report.question.topic}` : `Question ID ${report.question_id}`}</small></div><div className="admin-report-meta"><span>Reported by <b>{report.reporter?.full_name || report.reporter?.email || report.reporter?.phone || "User account"}</b></span><span>{report.reporter?.email || report.reporter?.phone || "Contact unavailable"}</span></div><div className="admin-report-actions">{report.question && <button className="admin-remove-button" disabled={busy || reportsBusy} onClick={() => deleteReportedQuestion(report)}>Delete question</button>}{report.status === "open" ? <><button className="admin-edit-button" disabled={reportsBusy} onClick={() => updateReportStatus(report, "dismissed")}>Dismiss</button><button className="admin-button primary" disabled={reportsBusy} onClick={() => updateReportStatus(report, "resolved")}>Resolve</button></> : <button className="admin-edit-button" disabled={reportsBusy} onClick={() => updateReportStatus(report, "open")}>Reopen</button>}</div></article>)}</div> : <div className="admin-empty">{reportsBusy ? "Loading reports…" : reports.length ? `No ${reportFilter === "all" ? "" : `${reportFilter} `}reports in this view.` : "No question reports yet. Reports will appear here as users submit them."}</div>}
         </section>
 
         <section className="admin-card" id="catalog"><div className="admin-list-heading"><div><h2>Practice subjects &amp; years</h2><p>Add or hide filters shown in Practice by Subject and Practice by Year. Removing an item preserves its questions.</p></div><button className="admin-button secondary" onClick={loadCatalog} disabled={catalogBusy}>{catalogBusy ? "Refreshing…" : "Refresh"}</button></div>

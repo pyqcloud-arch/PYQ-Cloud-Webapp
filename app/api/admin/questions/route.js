@@ -205,15 +205,8 @@ export async function DELETE(request) {
   const id = new URL(request.url).searchParams.get("id") || "";
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) return response({ error: "Choose a valid question." }, 400);
 
-  const [bookmarks, attempts] = await Promise.all([
-    auth.database.from("bookmarks").select("id", { count: "exact", head: true }).eq("question_id", id),
-    auth.database.from("question_attempts").select("id", { count: "exact", head: true }).eq("question_id", id),
-  ]);
-  if (bookmarks.error || attempts.error) return response({ error: "Could not check whether students have saved this question." }, 500);
-  if ((bookmarks.count || 0) > 0 || (attempts.count || 0) > 0) return response({ error: "This question is linked to student bookmarks or attempts, so it cannot be removed." }, 409);
-
   const { error } = await auth.database.from("questions").delete().eq("id", id);
-  if (error) return response({ error: "Could not remove the question." }, 500);
+  if (error) return response({ error: "Could not remove the question. Refresh the list and try again." }, 500);
   console.info("Admin question removal completed", { adminEmail: auth.adminEmail, questionId: id });
   return response({ removed: true });
 }

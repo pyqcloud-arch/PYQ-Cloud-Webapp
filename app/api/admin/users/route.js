@@ -17,7 +17,7 @@ export async function GET(request) {
     let total = 0;
     if (!search) {
       const { data, error, count } = await auth.database.from("profiles")
-        .select("id, email, phone, full_name, user_metadata, role, created_at", { count: "exact" })
+        .select("id, email, phone, firebase_uid, full_name, user_metadata, role, created_at", { count: "exact" })
         .order("created_at", { ascending: false })
         .range((page - 1) * perPage, page * perPage - 1);
       if (error) return adminResponse({ error: "Could not load user profiles." }, 500);
@@ -26,7 +26,7 @@ export async function GET(request) {
     } else {
       for (let offset = 0; ; offset += 500) {
         const { data, error } = await auth.database.from("profiles")
-          .select("id, email, phone, full_name, user_metadata, role, created_at")
+          .select("id, email, phone, firebase_uid, full_name, user_metadata, role, created_at")
           .order("created_at", { ascending: false })
           .range(offset, offset + 499);
         if (error) return adminResponse({ error: "Could not search user profiles." }, 500);
@@ -40,6 +40,7 @@ export async function GET(request) {
     }
     const rows = profiles.map((profile) => ({
       id: profile.id,
+      firebaseUid: profile.firebase_uid || "",
       email: profile.email || "",
       phone: profile.phone || "",
       fullName: profile.full_name || profile.user_metadata?.full_name || profile.user_metadata?.name || "",
@@ -94,13 +95,23 @@ export async function DELETE(request) {
   const id = new URL(request.url).searchParams.get("id") || "";
   if (!uuidPattern.test(id)) return adminResponse({ error: "Choose a valid user profile." }, 400);
   if (id === auth.user.id) return adminResponse({ error: "You cannot delete the admin account currently signed in." }, 400);
+  const { data: targetProfile, error: profileError } = await auth.database.from("profiles").select("role, firebase_uid").eq("id", id).maybeSingle();
+  if (profileError) return adminResponse({ error: "Could not verify this account’s Supabase role." }, 500);
+  if (!targetProfile) return adminResponse({ error: "This user profile was not found." }, 404);
+  if (targetProfile?.role === "admin") return adminResponse({ error: "Admin accounts are protected from deletion in this panel." }, 403);
+  if (targetProfile.firebase_uid) return adminResponse({ error: "This user signs in with Firebase. Delete the account through the verified Firebase admin function." }, 409);
   const { data: found, error: findError } = await auth.database.auth.admin.getUserById(id);
   if (findError || !found?.user) return adminResponse({ error: "This user account was not found." }, 404);
-  const { data: targetProfile, error: profileError } = await auth.database.from("profiles").select("role").eq("id", id).maybeSingle();
-  if (profileError) return adminResponse({ error: "Could not verify this account’s Supabase role." }, 500);
-  if (targetProfile?.role === "admin") return adminResponse({ error: "Admin accounts are protected from deletion in this panel." }, 403);
   const { error } = await auth.database.auth.admin.deleteUser(id);
   if (error) return adminResponse({ error: "Could not delete this user account." }, 500);
+  // Firebase auth was introduced separately from Supabase Auth, so profiles.id
+  // no longer cascades from auth.users. Remove the app profile explicitly to
+  // cascade bookmarks, attempts, notes, habits, and other user-owned records.
+  const { data: removedProfile, error: profileDeleteError } = await auth.database.from("profiles").delete().eq("id", id).select("id").maybeSingle();
+  if (profileDeleteError || !removedProfile) {
+    console.error("Supabase Auth user was deleted but profile cleanup failed", { userId: id, code: profileDeleteError?.code });
+    return adminResponse({ error: "The login was removed, but linked app data could not be fully cleaned up. Contact support before recreating this account." }, 500);
+  }
   console.info("Admin deleted a user account", { admin: auth.user.email || auth.user.phone, userId: id });
   return adminResponse({ deleted: true });
 }
