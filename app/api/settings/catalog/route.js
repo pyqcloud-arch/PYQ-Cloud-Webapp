@@ -24,7 +24,7 @@ async function loadQuestionCatalogRows(database) {
 
 export async function GET() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  const key = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503, headers: { "Cache-Control": "no-store" } });
   const database = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
   const [settingsResult, questionsResult] = await Promise.all([
@@ -34,6 +34,7 @@ export async function GET() {
   if (settingsResult.error || questionsResult.error) return NextResponse.json({ error: "Could not load the practice catalogue from Supabase." }, { status: 503, headers: { "Cache-Control": "no-store" } });
   const saved = settingsResult.data?.value || {};
   const savedYears = Array.isArray(saved.years) ? saved.years : [];
+  const seededYearDefaults = new Set(Array.from({ length: 16 }, (_, index) => String(2026 - index)));
   const activeValues = (dynamic, overrides, kind) => {
     const values = new Map();
     dynamic.forEach((item) => { const value = String(item || "").trim(); if (value) values.set(value.toLowerCase(), value); });
@@ -41,9 +42,17 @@ export async function GET() {
     return [...values.values()].sort(kind === "year" ? (a, b) => Number(b) - Number(a) : (a, b) => a.localeCompare(b));
   };
   const questionRows = questionsResult.data || [];
-  const years = Array.isArray(saved.years)
-    ? [...new Set(savedYears.filter((entry) => entry?.active !== false).map((entry) => String(entry?.value || "").trim()).filter((year) => /^\d{4}$/.test(year)))].sort((a, b) => Number(b) - Number(a))
-    : activeValues(questionRows.map((item) => item.year), savedYears, "year");
+  const yearOptions = new Map();
+  questionRows.forEach((item) => {
+    const year = String(item.year || "").trim();
+    if (/^\d{4}$/.test(year)) yearOptions.set(year, { value: year, active: true });
+  });
+  savedYears.forEach((entry) => {
+    const year = String(entry?.value || "").trim();
+    if (!/^\d{4}$/.test(year) || (!yearOptions.has(year) && seededYearDefaults.has(year))) return;
+    yearOptions.set(year, { value: year, active: entry.active !== false });
+  });
+  const years = [...yearOptions.values()].filter((entry) => entry.active).map((entry) => entry.value).sort((a, b) => Number(b) - Number(a));
   return response({
     subjects: activeValues(questionRows.map((item) => item.subject), saved.subjects, "subject"),
     years,
