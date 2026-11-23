@@ -1,7 +1,10 @@
 const functions = require("firebase-functions/v1");
+const { initializeApp } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { defineSecret } = require("firebase-functions/params");
+
+initializeApp();
 
 const supabaseSecret = defineSecret("SUPABASE_SECRET_KEY");
 const supabaseUrl = "https://nhjvfifbxehnewnlyxgw.supabase.co";
