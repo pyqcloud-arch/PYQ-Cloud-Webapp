@@ -33,6 +33,7 @@ export async function GET() {
   ]);
   if (settingsResult.error || questionsResult.error) return NextResponse.json({ error: "Could not load the practice catalogue from Supabase." }, { status: 503, headers: { "Cache-Control": "no-store" } });
   const saved = settingsResult.data?.value || {};
+  const savedYears = Array.isArray(saved.years) ? saved.years : [];
   const activeValues = (dynamic, overrides, kind) => {
     const values = new Map();
     dynamic.forEach((item) => { const value = String(item || "").trim(); if (value) values.set(value.toLowerCase(), value); });
@@ -40,8 +41,11 @@ export async function GET() {
     return [...values.values()].sort(kind === "year" ? (a, b) => Number(b) - Number(a) : (a, b) => a.localeCompare(b));
   };
   const questionRows = questionsResult.data || [];
+  const years = Array.isArray(saved.years)
+    ? [...new Set(savedYears.filter((entry) => entry?.active !== false).map((entry) => String(entry?.value || "").trim()).filter((year) => /^\d{4}$/.test(year)))].sort((a, b) => Number(b) - Number(a))
+    : activeValues(questionRows.map((item) => item.year), savedYears, "year");
   return response({
     subjects: activeValues(questionRows.map((item) => item.subject), saved.subjects, "subject"),
-    years: activeValues(questionRows.map((item) => item.year), saved.years, "year"),
+    years,
   });
 }
