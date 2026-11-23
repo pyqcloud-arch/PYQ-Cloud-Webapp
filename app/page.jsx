@@ -1548,8 +1548,7 @@ export default function Page() {
   const meditationProgress = Math.min(100, Math.max(0, (meditationSeconds / Math.max(1, meditationMinutes * 60)) * 100));
   const referralCode = user?.user_metadata?.referral_code || (user?.id ? `PYQ${user.id.replace(/-/g, "").slice(0, 6).toUpperCase()}` : "PYQCLOUD");
 
-  if (!authReady) return <main className="app-shell"><div className="phone-screen auth-loading" role="status" aria-live="polite"><span className="auth-spinner" aria-hidden="true" />Restoring your session…</div></main>;
-  if (!user && !unauthenticatedScreens.has(screen)) return <main className="app-shell"><div className="phone-screen auth-loading" role="status" aria-live="polite"><span className="auth-spinner" aria-hidden="true" />Returning to sign in…</div></main>;
+  if (!authReady || (!user && !unauthenticatedScreens.has(screen))) return <main className="app-shell"><div className="phone-screen auth-pending" aria-hidden="true" />{/** Keep session recovery quiet; don't replace app transitions with a visible loader. */}</main>;
 
   return <main className="app-shell">
     <audio id="pyq-background-music" src={musicSettings.trackUrl || "/audio/pyq-focus.wav"} loop preload="none" onEnded={() => setMusicPlaying(false)} />
