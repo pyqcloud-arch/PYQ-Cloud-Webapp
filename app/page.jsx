@@ -362,6 +362,8 @@ export default function Page() {
   const [bookmarkTopic, setBookmarkTopic] = useState("All topics");
   const [randomCount, setRandomCount] = useState(25);
   const [includeAttempted, setIncludeAttempted] = useState(true);
+  const [randomQuestionDeck, setRandomQuestionDeck] = useState([]);
+  const [activeRandomQuestionIds, setActiveRandomQuestionIds] = useState([]);
   const [drawer, setDrawer] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [authReady, setAuthReady] = useState(false);
@@ -490,7 +492,7 @@ export default function Page() {
   const randomPool = includeAttempted ? matchingQuestions : matchingQuestions.filter((item) => !attemptedIds.has(item.id));
   const topicQuestions = selectedTopics.length ? matchingQuestions.filter((item) => selectedTopics.includes(displayTopic(item.topic || item.tag))) : matchingQuestions;
   const reviewQuestion = reviewQuestionPrompt ? questions.find((item) => item.prompt === reviewQuestionPrompt) : null;
-  const questionList = testInProgress && testQuestions.length ? testQuestions : reviewQuestion ? [reviewQuestion] : subject === "Mixed Practice" ? randomPool.slice(0, randomCount) : /^\d{4}$/.test(subject) ? topicQuestions : topicQuestions.slice(0, topicQuestionCount);
+  const questionList = testInProgress && testQuestions.length ? testQuestions : reviewQuestion ? [reviewQuestion] : subject === "Mixed Practice" ? activeRandomQuestionIds.map((id) => randomPool.find((item) => String(item.id ?? item.prompt) === id)).filter(Boolean) : /^\d{4}$/.test(subject) ? topicQuestions : topicQuestions.slice(0, topicQuestionCount);
   const question = questionList[questionIndex % Math.max(questionList.length, 1)] ?? questions[0];
   const practiceQuestionKey = String(question?.id ?? question?.prompt ?? questionIndex);
   const currentPracticeSelection = practiceSelections[practiceQuestionKey] ?? null;
@@ -653,6 +655,8 @@ export default function Page() {
     setBookmarkTopic(snapshot.bookmarkTopic || "All topics");
     setRandomCount(Number(snapshot.randomCount) || 25);
     setIncludeAttempted(snapshot.includeAttempted !== false);
+    setRandomQuestionDeck(Array.isArray(snapshot.randomQuestionDeck) ? snapshot.randomQuestionDeck : []);
+    setActiveRandomQuestionIds(Array.isArray(snapshot.activeRandomQuestionIds) ? snapshot.activeRandomQuestionIds : []);
     setSeconds(Number(snapshot.seconds) || 25 * 60);
     setFocusMinutes(Number(snapshot.focusMinutes) || 25);
     setTimerMinutes(Number(snapshot.timerMinutes) || 25);
@@ -883,6 +887,7 @@ export default function Page() {
       mistakeSort, mistakeSubjectFilter, notes, habits, habitLogs, habitDate: habitDate.toISOString(), habitHistory,
       testHistory, testQuestions, testAnswers, testReviewFlags, testInProgress, submittedTest, testReviewIndex,
       testResultFilter, selectedTopics, topicQuestionCount, bookmarkSearch, bookmarkTopic, randomCount, includeAttempted,
+      randomQuestionDeck, activeRandomQuestionIds,
       seconds, focusMinutes, timerMinutes, timerDurationDraft, timerRunning, meditationMinutes, meditationSeconds,
       meditationRunning, mode, subject, analytics, homeNote, musicSettings,
     };
@@ -896,7 +901,7 @@ export default function Page() {
     practiceChecks, eliminated, bookmarks, mistakes, mistakeSearch, mistakeSort, mistakeSubjectFilter, notes, habits,
     habitLogs, habitDate, habitHistory, testHistory, testQuestions, testAnswers, testReviewFlags, testInProgress,
     submittedTest, testReviewIndex, testResultFilter, selectedTopics, topicQuestionCount, bookmarkSearch, bookmarkTopic,
-    randomCount, includeAttempted, seconds, focusMinutes, timerMinutes, timerDurationDraft, timerRunning,
+    randomCount, includeAttempted, randomQuestionDeck, activeRandomQuestionIds, seconds, focusMinutes, timerMinutes, timerDurationDraft, timerRunning,
     meditationMinutes, meditationSeconds, meditationRunning, mode, subject, analytics, homeNote, musicSettings]);
   useEffect(() => {
     let active = true;
@@ -1349,8 +1354,52 @@ export default function Page() {
     setToast("Note deleted");
   };
   const startPractice = (name, reviewPrompt = "") => {
+    setActiveRandomQuestionIds([]);
     setPracticeReturnScreen(screen === "Random Practice" || screen === "Practice by Year" ? screen : "Practice by Subject");
     setReviewQuestionPrompt(reviewPrompt); setQuestionIndex(0); setSubject(name); setPracticeFinished(false);
+    setPracticeElapsedSeconds(0); setTimerRunning(false); setTestInProgress(false); setTestQuestions([]); setTestAnswers({}); setTestReviewFlags([]);
+    setSelected(null); setAnswerChecked(false); setPracticeSelections({}); setPracticeChecks({}); setEliminated([]); setShowQuestionPalette(false); setShowSubmitTest(false);
+    go("Practice");
+  };
+  const startRandomPractice = () => {
+    const getId = (item) => String(item.id ?? item.prompt ?? "");
+    const eligible = questions.filter((item) => (includeAttempted || !attemptedIds.has(item.id)) && getId(item));
+    if (!eligible.length) { setToast("No questions are available for Random Practice yet."); return; }
+
+    const shuffle = (items) => {
+      const shuffled = [...items];
+      for (let index = shuffled.length - 1; index > 0; index -= 1) {
+        const swapIndex = Math.floor(Math.random() * (index + 1));
+        [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+      }
+      return shuffled;
+    };
+    const eligibleIds = [...new Set(eligible.map(getId))];
+    const eligibleSet = new Set(eligibleIds);
+    const activeDeck = [...new Set(randomQuestionDeck)].filter((id) => eligibleSet.has(id));
+    const deckSet = new Set(activeDeck);
+    const newIds = shuffle(eligibleIds.filter((id) => !deckSet.has(id)));
+    let deck = [...activeDeck, ...newIds];
+    const setSize = Math.min(Math.max(1, randomCount), eligibleIds.length);
+    const selectedIds = deck.splice(0, setSize);
+
+    // If the remaining deck is shorter than the selected set size, top it up
+    // from a newly shuffled cycle while excluding this set's questions.
+    if (selectedIds.length < setSize) {
+      const selected = new Set(selectedIds);
+      const refillCycle = shuffle(eligibleIds);
+      const refill = refillCycle.filter((id) => !selected.has(id));
+      const needed = setSize - selectedIds.length;
+      const refillIds = refill.slice(0, needed);
+      selectedIds.push(...refillIds);
+      const newlySelected = new Set(refillIds);
+      deck = refillCycle.filter((id) => !newlySelected.has(id));
+    }
+
+    setRandomQuestionDeck(deck);
+    setActiveRandomQuestionIds(selectedIds);
+    setPracticeReturnScreen("Random Practice");
+    setReviewQuestionPrompt(""); setQuestionIndex(0); setSubject("Mixed Practice"); setPracticeFinished(false);
     setPracticeElapsedSeconds(0); setTimerRunning(false); setTestInProgress(false); setTestQuestions([]); setTestAnswers({}); setTestReviewFlags([]);
     setSelected(null); setAnswerChecked(false); setPracticeSelections({}); setPracticeChecks({}); setEliminated([]); setShowQuestionPalette(false); setShowSubmitTest(false);
     go("Practice");
@@ -1827,7 +1876,7 @@ export default function Page() {
 
       {screen === "Practice by Year" && <Content title="Practice by Year" subtitle="Practice a complete year’s paper." back={() => go("Home")} character="reading"><div className="year-section-label">Select by year</div><div className="year-grid">{availableYears.map((year) => <button className={`year-chip ${selectedYear === year ? "selected" : ""}`} key={year} onClick={() => setSelectedYear(year)}>{year}</button>)}</div><PracticeStartButton className="year-start-button" disabled={!selectedYear} onClick={() => startPractice(selectedYear)} /></Content>}
 
-      {screen === "Random Practice" && <Content className="random-practice-page" title="Random Practice" subtitle="Challenge yourself with PYQs from all UPSC subjects." back={() => go("Home")} character="reading"><div className="random-intro">Use this mode if you are super confident about PYQs!</div><label className="random-field-label" htmlFor="random-count">Number of questions</label><QuestionCountControl id="random-count" value={randomCount} onChange={(event) => setRandomCount(Math.min(100, Math.max(5, Number(event.target.value) || 5)))} onDecrease={() => setRandomCount((value) => Math.max(5, value - 5))} onIncrease={() => setRandomCount((value) => Math.min(100, value + 5))} /><label className="attempted-toggle"><input type="checkbox" checked={includeAttempted} onChange={(event) => setIncludeAttempted(event.target.checked)} /><span>Include questions that I have already attempted.</span></label><PracticeStartButton onClick={() => startPractice("Mixed Practice")} /></Content>}
+      {screen === "Random Practice" && <Content className="random-practice-page" title="Random Practice" subtitle="Challenge yourself with PYQs from all UPSC subjects." back={() => go("Home")} character="reading"><div className="random-intro">Use this mode if you are super confident about PYQs!</div><label className="random-field-label" htmlFor="random-count">Number of questions</label><QuestionCountControl id="random-count" value={randomCount} onChange={(event) => setRandomCount(Math.min(100, Math.max(5, Number(event.target.value) || 5)))} onDecrease={() => setRandomCount((value) => Math.max(5, value - 5))} onIncrease={() => setRandomCount((value) => Math.min(100, value + 5))} /><label className="attempted-toggle"><input type="checkbox" checked={includeAttempted} onChange={(event) => setIncludeAttempted(event.target.checked)} /><span>Include questions that I have already attempted.</span></label><PracticeStartButton onClick={startRandomPractice} /></Content>}
 
       {screen === "Practice" && !questionList.length && <Content title={`${subject} Practice`} subtitle="Questions are being added" back={() => setShowEndPracticeDialog(true)}><Empty icon="▤" title="No questions in this set yet" text="Try another subject or year. The PYQ Cloud question bank will appear here as the client content is loaded." /></Content>}
       {screen === "Practice" && practiceFinished && <Content title="Practice set complete" subtitle="You have reached the end of this set." back={() => setShowEndPracticeDialog(true)}><div className="question-card practice-complete-card"><h2>Practice complete</h2><p>{questionList.length} {questionList.length === 1 ? "question was" : "questions were"} in this set. Choose another set to continue practicing.</p></div><button className="primary-button full-button" onClick={() => go(practiceReturnScreen)}>Choose another practice set <span>→</span></button></Content>}
