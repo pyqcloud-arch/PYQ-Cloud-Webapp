@@ -574,12 +574,14 @@ export default function Page() {
     if (!error) setAvatarUrl(data.signedUrl);
   };
 
-  const restoreCachedApp = (cached) => {
+  const restoreCachedApp = (cached, startAtHome = false) => {
     const identity = userCacheIdentity(cached?.user);
     if (!cached?.snapshot || !identity || cached.identity !== identity) return false;
     const snapshot = cached.snapshot;
-    const restoredScreen = typeof snapshot.screen === "string" && !unauthenticatedScreens.has(snapshot.screen) ? snapshot.screen : authenticatedLandingScreen(cached.user);
-    screenHistoryRef.current = Array.isArray(snapshot.screenHistory) ? snapshot.screenHistory.filter((item) => typeof item === "string").slice(-30) : [];
+    const restoredScreen = startAtHome
+      ? authenticatedLandingScreen(cached.user)
+      : typeof snapshot.screen === "string" && !unauthenticatedScreens.has(snapshot.screen) ? snapshot.screen : authenticatedLandingScreen(cached.user);
+    screenHistoryRef.current = startAtHome ? [] : Array.isArray(snapshot.screenHistory) ? snapshot.screenHistory.filter((item) => typeof item === "string").slice(-30) : [];
     screenRef.current = restoredScreen;
     setScreen(restoredScreen);
     setUser(cached.user);
@@ -673,6 +675,15 @@ export default function Page() {
   useEffect(() => {
     const requestedScreen = new URLSearchParams(window.location.search).get("screen");
     const query = new URLSearchParams(window.location.search);
+    const standalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+    const appSessionKey = "pyq-app-open-session-v1";
+    let startInstalledAppAtHome = false;
+    if (standalone) {
+      try {
+        startInstalledAppAtHome = window.sessionStorage.getItem(appSessionKey) !== "active";
+        window.sessionStorage.setItem(appSessionKey, "active");
+      } catch { startInstalledAppAtHome = true; }
+    }
     if (query.get("reset") === "complete") {
       setAuthMode("signin");
       setAuthNotice("Your password was reset. Sign in with your new password.");
@@ -685,7 +696,7 @@ export default function Page() {
         if (currentFirebaseUser) appSnapshotPromise.then((cached) => {
           if (active && getFirebaseAuth().currentUser?.uid === currentFirebaseUser.uid) {
             cacheWriteAllowedRef.current = true;
-            restoreCachedApp(cached);
+            restoreCachedApp(cached, startInstalledAppAtHome);
           }
         });
       } catch { /* Auth listener below handles initialization when Firebase is not ready yet. */ }
@@ -693,7 +704,6 @@ export default function Page() {
     fetch("/api/settings/catalog", { cache: "no-store" }).then((response) => response.ok ? response.json() : null).then((value) => {
       if (value && Array.isArray(value.subjects) && Array.isArray(value.years)) setPracticeCatalog(value);
     }).catch(() => {});
-    const standalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
     setIsInstalledApp(standalone);
     let active = true;
     let authListener = null;
@@ -716,7 +726,7 @@ export default function Page() {
           const cachedApp = await appSnapshotPromise;
           if (!active) return;
           cacheWriteAllowedRef.current = true;
-          const restoredFromCache = restoreCachedApp(cachedApp);
+          const restoredFromCache = restoreCachedApp(cachedApp, startInstalledAppAtHome);
           if (firebaseUser.email && !firebaseUser.emailVerified && !firebaseUser.phoneNumber) {
             setUser(null);
             setAuthEmail(firebaseUser.email);
@@ -765,7 +775,7 @@ export default function Page() {
         cacheWriteAllowedRef.current = Boolean(sessionUser);
         const cachedApp = await appSnapshotPromise;
         if (!active) return;
-        const restoredFromCache = sessionUser ? restoreCachedApp(cachedApp) : false;
+        const restoredFromCache = sessionUser ? restoreCachedApp(cachedApp, startInstalledAppAtHome) : false;
         const sessionProfileRole = sessionUser ? await getSupabaseProfileRole(sessionUser.id) : "user";
         if (!active) return;
         const resolvedSessionUser = sessionUser ? { ...sessionUser, role: sessionProfileRole } : null;
