@@ -148,6 +148,56 @@ function qualifiesForStreak(attempts, dayKey) {
   return questions.size >= 15;
 }
 
+const APP_CACHE_DB = "pyq-cloud-render-cache";
+const APP_CACHE_STORE = "snapshots";
+let appCacheDbPromise;
+function userCacheIdentity(user) {
+  if (user?.authProvider === "firebase" && user.firebase_uid) return `firebase:${user.firebase_uid}`;
+  if (user?.id) return `supabase:${user.id}`;
+  return "";
+}
+function openAppCacheDb() {
+  if (typeof window === "undefined" || !window.indexedDB) return Promise.resolve(null);
+  if (!appCacheDbPromise) appCacheDbPromise = new Promise((resolve) => {
+    const request = window.indexedDB.open(APP_CACHE_DB, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(APP_CACHE_STORE);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve(null);
+  });
+  return appCacheDbPromise;
+}
+async function readAppSnapshot() {
+  const db = await openAppCacheDb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    const request = db.transaction(APP_CACHE_STORE, "readonly").objectStore(APP_CACHE_STORE).get("current");
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => resolve(null);
+  });
+}
+async function writeAppSnapshot(value) {
+  const db = await openAppCacheDb();
+  if (!db) return;
+  await new Promise((resolve) => {
+    const transaction = db.transaction(APP_CACHE_STORE, "readwrite");
+    transaction.objectStore(APP_CACHE_STORE).put(value, "current");
+    transaction.oncomplete = resolve;
+    transaction.onerror = resolve;
+    transaction.onabort = resolve;
+  });
+}
+async function clearAppSnapshot() {
+  const db = await openAppCacheDb();
+  if (!db) return;
+  await new Promise((resolve) => {
+    const transaction = db.transaction(APP_CACHE_STORE, "readwrite");
+    transaction.objectStore(APP_CACHE_STORE).delete("current");
+    transaction.oncomplete = resolve;
+    transaction.onerror = resolve;
+    transaction.onabort = resolve;
+  });
+}
+
 function summarizeAttempts(attempts) {
   const correctCount = attempts.filter((item) => item.is_correct).length;
   const today = localDateKey();
@@ -265,6 +315,7 @@ export default function Page() {
   const [screen, setScreen] = useState("Welcome");
   const screenRef = useRef("Welcome");
   const screenHistoryRef = useRef([]);
+  const cacheWriteAllowedRef = useRef(false);
   const exitPromptTimeRef = useRef(0);
   const practiceBackApprovedRef = useRef(false);
   const testSubmitBusyRef = useRef(false);
@@ -341,8 +392,10 @@ export default function Page() {
   };
   const signOutApp = async () => {
     try {
+      cacheWriteAllowedRef.current = false;
       if (usesFirebaseAuth() && getFirebaseAuth().currentUser) await firebaseSignOut(getFirebaseAuth());
       if (!usesFirebaseAuth()) await supabase.auth.signOut();
+      await clearAppSnapshot();
       setUser(null);
       setProfileName("");
       setAccountEmail("");
@@ -521,6 +574,85 @@ export default function Page() {
     if (!error) setAvatarUrl(data.signedUrl);
   };
 
+  const restoreCachedApp = (cached) => {
+    const identity = userCacheIdentity(cached?.user);
+    if (!cached?.snapshot || !identity || cached.identity !== identity) return false;
+    const snapshot = cached.snapshot;
+    const restoredScreen = typeof snapshot.screen === "string" && !unauthenticatedScreens.has(snapshot.screen) ? snapshot.screen : authenticatedLandingScreen(cached.user);
+    screenHistoryRef.current = Array.isArray(snapshot.screenHistory) ? snapshot.screenHistory.filter((item) => typeof item === "string").slice(-30) : [];
+    screenRef.current = restoredScreen;
+    setScreen(restoredScreen);
+    setUser(cached.user);
+    setProfileName(snapshot.profileName || cached.user.user_metadata?.full_name || "");
+    setAccountEmail(snapshot.accountEmail || cached.user.email || "");
+    setAccountPhone(snapshot.accountPhone || cached.user.phone || "");
+    setAboutExamCount(snapshot.aboutExamCount || "0");
+    setAboutTargetYear(snapshot.aboutTargetYear || "");
+    setAccountEditing(Boolean(snapshot.accountEditing));
+    setMembershipChoice(snapshot.membershipChoice || "Monthly");
+    setAvatarUrl(snapshot.avatarUrl || "");
+    setQuestions(Array.isArray(snapshot.questions) ? snapshot.questions : []);
+    setPracticeCatalog(snapshot.practiceCatalog || null);
+    setAttemptHistory(Array.isArray(snapshot.attemptHistory) ? snapshot.attemptHistory : []);
+    setSelectedYear(snapshot.selectedYear || "");
+    setTestYear(snapshot.testYear || "");
+    setTestSubject(snapshot.testSubject || "");
+    setTestQuestionCount(Number(snapshot.testQuestionCount) || 100);
+    setPendingTest(snapshot.pendingTest || null);
+    setQuestionIndex(Number(snapshot.questionIndex) || 0);
+    setPracticeElapsedSeconds(Number(snapshot.practiceElapsedSeconds) || 0);
+    setPracticeReturnScreen(snapshot.practiceReturnScreen || "Practice by Subject");
+    setReviewQuestionPrompt(snapshot.reviewQuestionPrompt || "");
+    setPracticeFinished(Boolean(snapshot.practiceFinished));
+    setSelected(snapshot.selected ?? null);
+    setAnswerChecked(Boolean(snapshot.answerChecked));
+    setPracticeSelections(snapshot.practiceSelections || {});
+    setPracticeChecks(snapshot.practiceChecks || {});
+    setEliminated(Array.isArray(snapshot.eliminated) ? snapshot.eliminated : []);
+    setBookmarks(Array.isArray(snapshot.bookmarks) ? snapshot.bookmarks : []);
+    setMistakes(Array.isArray(snapshot.mistakes) ? snapshot.mistakes : []);
+    setMistakeSearch(snapshot.mistakeSearch || "");
+    setMistakeSort(snapshot.mistakeSort || "Newest");
+    setMistakeSubjectFilter(snapshot.mistakeSubjectFilter || "All subjects");
+    setNotes(Array.isArray(snapshot.notes) ? snapshot.notes : []);
+    setHabits(Array.isArray(snapshot.habits) ? snapshot.habits : []);
+    setHabitLogs(Array.isArray(snapshot.habitLogs) ? snapshot.habitLogs : []);
+    setHabitDate(snapshot.habitDate ? new Date(snapshot.habitDate) : new Date());
+    setHabitHistory(snapshot.habitHistory || {});
+    setTestHistory(Array.isArray(snapshot.testHistory) ? snapshot.testHistory : []);
+    setTestQuestions(Array.isArray(snapshot.testQuestions) ? snapshot.testQuestions : []);
+    setTestAnswers(snapshot.testAnswers || {});
+    setTestReviewFlags(Array.isArray(snapshot.testReviewFlags) ? snapshot.testReviewFlags : []);
+    setTestInProgress(Boolean(snapshot.testInProgress));
+    setSubmittedTest(snapshot.submittedTest || null);
+    setTestReviewIndex(Number(snapshot.testReviewIndex) || 0);
+    setTestResultFilter(snapshot.testResultFilter || "All");
+    setSelectedTopics(Array.isArray(snapshot.selectedTopics) ? snapshot.selectedTopics : []);
+    setTopicQuestionCount(Number(snapshot.topicQuestionCount) || 25);
+    setBookmarkSearch(snapshot.bookmarkSearch || "");
+    setBookmarkTopic(snapshot.bookmarkTopic || "All topics");
+    setRandomCount(Number(snapshot.randomCount) || 25);
+    setIncludeAttempted(snapshot.includeAttempted !== false);
+    setSeconds(Number(snapshot.seconds) || 25 * 60);
+    setFocusMinutes(Number(snapshot.focusMinutes) || 25);
+    setTimerMinutes(Number(snapshot.timerMinutes) || 25);
+    setTimerDurationDraft(snapshot.timerDurationDraft || "25");
+    setTimerRunning(Boolean(snapshot.timerRunning));
+    setMeditationMinutes(Number(snapshot.meditationMinutes) || 10);
+    setMeditationSeconds(Number(snapshot.meditationSeconds) || 600);
+    setMeditationRunning(Boolean(snapshot.meditationRunning));
+    setMode(snapshot.mode || "Pomodoro");
+    setSubject(snapshot.subject || "Polity");
+    setAnalytics(snapshot.analytics || summarizeAttempts(snapshot.attemptHistory || []));
+    setHomeNote(snapshot.homeNote || { heading: "A note for you", subtitle: "Today is a new day!", text: "Every question that you practice brings you one step closer to your dream." });
+    setMusicSettings(snapshot.musicSettings || { enabled: false, trackUrl: "", volume: 0.35 });
+    setDrawer(false);
+    setShowQuestionPalette(false); setShowSubmitTest(false); setShowTestRules(false); setShowEndPracticeDialog(false);
+    setNoteMenuId(null); setShowMistakeSubjectPicker(false); setShowMistakeSubjectOptions(false);
+    setAuthReady(true);
+    return true;
+  };
+
   useEffect(() => {
     const updateGreeting = () => setTimeGreeting(getTimeBasedGreeting());
     updateGreeting();
@@ -545,9 +677,19 @@ export default function Page() {
       setAuthMode("signin");
       setAuthNotice("Your password was reset. Sign in with your new password.");
     }
-    for (const key of Object.keys(window.localStorage)) if (key.startsWith("pyq-")) window.localStorage.removeItem(key);
-    setBookmarks([]); setMistakes([]); setNotes([]); setHabits([]); setHabitLogs([]); setTestHistory([]); setAttemptHistory([]); setAnalytics(summarizeAttempts([]));
     setHydrated(true);
+    const appSnapshotPromise = readAppSnapshot();
+    if (usesFirebaseAuth()) {
+      try {
+        const currentFirebaseUser = getFirebaseAuth().currentUser;
+        if (currentFirebaseUser) appSnapshotPromise.then((cached) => {
+          if (active && getFirebaseAuth().currentUser?.uid === currentFirebaseUser.uid) {
+            cacheWriteAllowedRef.current = true;
+            restoreCachedApp(cached);
+          }
+        });
+      } catch { /* Auth listener below handles initialization when Firebase is not ready yet. */ }
+    }
     fetch("/api/settings/catalog", { cache: "no-store" }).then((response) => response.ok ? response.json() : null).then((value) => {
       if (value && Array.isArray(value.subjects) && Array.isArray(value.years)) setPracticeCatalog(value);
     }).catch(() => {});
@@ -562,6 +704,8 @@ export default function Page() {
         firebaseUnsubscribe = onAuthStateChanged(getFirebaseAuth(), async (firebaseUser) => {
           if (!active) return;
           if (!firebaseUser) {
+            cacheWriteAllowedRef.current = false;
+            void clearAppSnapshot();
             setUser(null);
             setAccountEmail("");
             setAccountPhone("");
@@ -569,6 +713,10 @@ export default function Page() {
             setAuthReady(true);
             return;
           }
+          const cachedApp = await appSnapshotPromise;
+          if (!active) return;
+          cacheWriteAllowedRef.current = true;
+          const restoredFromCache = restoreCachedApp(cachedApp);
           if (firebaseUser.email && !firebaseUser.emailVerified && !firebaseUser.phoneNumber) {
             setUser(null);
             setAuthEmail(firebaseUser.email);
@@ -591,15 +739,19 @@ export default function Page() {
               return;
             }
             const landingScreen = authenticatedLandingScreen(firebaseProfile);
-            if (landingScreen === "Account Settings") setAccountEditing(true);
-            resetNavigation(landingScreen);
+            if (landingScreen === "Account Settings") {
+              setAccountEditing(true);
+              resetNavigation(landingScreen);
+            } else if (!restoredFromCache) resetNavigation(landingScreen);
             setAuthReady(true);
             window.setTimeout(() => loadUserData(firebaseProfile), 0);
           } catch (error) {
             console.error("Firebase profile sync failed:", error);
             setAuthReady(true);
-            setAuthError("Firebase sign-in is waiting for its Supabase profile and role setup. Try again shortly.");
-            setToast("Could not connect your Firebase account to your Supabase profile.");
+            if (!restoredFromCache) {
+              setAuthError("Firebase sign-in is waiting for its Supabase profile and role setup. Try again shortly.");
+              setToast("Could not connect your Firebase account to your Supabase profile.");
+            }
           }
         });
       } catch (error) {
@@ -610,6 +762,10 @@ export default function Page() {
       supabase.auth.getSession().then(async ({ data }) => {
         if (!active) return;
         const sessionUser = data.session?.user ?? null;
+        cacheWriteAllowedRef.current = Boolean(sessionUser);
+        const cachedApp = await appSnapshotPromise;
+        if (!active) return;
+        const restoredFromCache = sessionUser ? restoreCachedApp(cachedApp) : false;
         const sessionProfileRole = sessionUser ? await getSupabaseProfileRole(sessionUser.id) : "user";
         if (!active) return;
         const resolvedSessionUser = sessionUser ? { ...sessionUser, role: sessionProfileRole } : null;
@@ -620,8 +776,8 @@ export default function Page() {
         if (resolvedSessionUser && new URLSearchParams(window.location.search).get("next") === "/admin") window.location.replace("/admin");
         else if (resolvedSessionUser) {
           const landingScreen = requestedScreen === "Reset Password" ? "Reset Password" : authenticatedLandingScreen(resolvedSessionUser);
-          if (landingScreen === "Account Settings") setAccountEditing(true);
-          resetNavigation(landingScreen);
+          if (landingScreen === "Account Settings") { setAccountEditing(true); resetNavigation(landingScreen); }
+          else if (!restoredFromCache) resetNavigation(landingScreen);
         }
         else resetNavigation(requestedScreen === "Auth" || requestedScreen === "Reset Password" ? requestedScreen : "Welcome");
         setAuthReady(true);
@@ -653,7 +809,9 @@ export default function Page() {
           if (landingScreen === "Account Settings") setAccountEditing(true);
           resetNavigation(landingScreen);
         }
-        else if (_event === "SIGNED_OUT") resetNavigation("Welcome");
+        else if (_event === "SIGNED_OUT") { void clearAppSnapshot(); resetNavigation("Welcome"); }
+        if (_event === "SIGNED_OUT") cacheWriteAllowedRef.current = false;
+        else if (_event === "SIGNED_IN") cacheWriteAllowedRef.current = true;
         if (_event === "SIGNED_IN" || _event === "SIGNED_OUT") setAuthReady(true);
         window.setTimeout(() => loadUserData(nextUser), 0);
       });
@@ -679,9 +837,7 @@ export default function Page() {
       setQuestions(supabaseRows.map((item) => ({ ...item, year: String(item.year), tag: item.topic, answer: item.correct_option })));
     }).catch((error) => {
       if (!active) return;
-      setQuestions([]);
       console.error("Could not load questions from Supabase", error);
-      setToast("Could not load questions from the question bank. Please try again.");
     });
     const onInstall = (event) => { event.preventDefault(); setInstallPrompt(event); };
     const onInstalled = () => { setInstallPrompt(null); setIsInstalledApp(true); setToast("PYQ Cloud was added to your home screen."); };
@@ -701,6 +857,34 @@ export default function Page() {
       displayMode.removeEventListener?.("change", onDisplayModeChange);
     };
   }, []);
+
+  useEffect(() => {
+    if (!cacheWriteAllowedRef.current || !authReady || !user || unauthenticatedScreens.has(screen)) return;
+    const identity = userCacheIdentity(user);
+    if (!identity) return;
+    const snapshot = {
+      screen, screenHistory: screenHistoryRef.current, profileName, accountEmail, accountPhone,
+      aboutExamCount, aboutTargetYear, accountEditing, membershipChoice, avatarUrl, questions, practiceCatalog,
+      attemptHistory, selectedYear, testYear, testSubject, testQuestionCount, pendingTest, questionIndex, practiceElapsedSeconds, practiceReturnScreen, reviewQuestionPrompt, practiceFinished,
+      selected, answerChecked, practiceSelections, practiceChecks, eliminated, bookmarks, mistakes, mistakeSearch,
+      mistakeSort, mistakeSubjectFilter, notes, habits, habitLogs, habitDate: habitDate.toISOString(), habitHistory,
+      testHistory, testQuestions, testAnswers, testReviewFlags, testInProgress, submittedTest, testReviewIndex,
+      testResultFilter, selectedTopics, topicQuestionCount, bookmarkSearch, bookmarkTopic, randomCount, includeAttempted,
+      seconds, focusMinutes, timerMinutes, timerDurationDraft, timerRunning, meditationMinutes, meditationSeconds,
+      meditationRunning, mode, subject, analytics, homeNote, musicSettings,
+    };
+    const timeout = window.setTimeout(() => {
+      void writeAppSnapshot({ identity, user, snapshot });
+    }, 180);
+    return () => window.clearTimeout(timeout);
+  }, [authReady, user, screen, profileName, accountEmail, accountPhone, aboutExamCount, aboutTargetYear, accountEditing,
+    membershipChoice, avatarUrl, questions, practiceCatalog, attemptHistory, selectedYear, testYear, testSubject, testQuestionCount, pendingTest, questionIndex, practiceElapsedSeconds,
+    practiceReturnScreen, reviewQuestionPrompt, practiceFinished, selected, answerChecked, practiceSelections,
+    practiceChecks, eliminated, bookmarks, mistakes, mistakeSearch, mistakeSort, mistakeSubjectFilter, notes, habits,
+    habitLogs, habitDate, habitHistory, testHistory, testQuestions, testAnswers, testReviewFlags, testInProgress,
+    submittedTest, testReviewIndex, testResultFilter, selectedTopics, topicQuestionCount, bookmarkSearch, bookmarkTopic,
+    randomCount, includeAttempted, seconds, focusMinutes, timerMinutes, timerDurationDraft, timerRunning,
+    meditationMinutes, meditationSeconds, meditationRunning, mode, subject, analytics, homeNote, musicSettings]);
   useEffect(() => {
     let active = true;
     const refreshQuestionBank = async () => {
@@ -1759,7 +1943,7 @@ export default function Page() {
       {screen === "My Profile" && <Content className="profile-page" title="My Profile" subtitle="Manage Profile" back={() => go("Home")}><div className="profile-card">{avatarUrl ? <img className="profile-photo" src={avatarUrl} alt={`${displayName || "Your"} profile photo`} /> : <span className="profile-photo profile-photo-placeholder" aria-hidden="true"><img src={figmaAsset.profile} alt="" /></span>}<h2>{displayName || "Enter your name"}</h2><p>{user?.email || user?.phone || "Email not added"}</p>{user?.phone && !user?.email && <button type="button" className="profile-email-action" onClick={() => { setAccountEmail(""); setAccountPhone(user.phone); setAccountEditing(true); go("Account Settings"); }}>Add email address</button>}<small className="member-since">{user?.created_at ? `Member since ${new Date(user.created_at).toLocaleDateString("en-IN", { month: "short", year: "numeric" })}` : ""}</small>{user ? <><button type="button" className="outline-button avatar-upload-button" onClick={() => avatarInputRef.current?.click()} disabled={avatarBusy}>{avatarBusy ? "Uploading photo…" : "Change profile photo"}</button><input ref={avatarInputRef} className="avatar-file-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={uploadAvatar} disabled={avatarBusy} aria-label="Choose a profile photo" /><button className="outline-button" onClick={() => setEditingProfile((value) => !value)}>{editingProfile ? "Cancel" : "Edit profile"}</button></> : <button className="outline-button" onClick={() => go("Welcome")}>Sign in to change photo</button>}{editingProfile && <form className="auth-form" onSubmit={saveProfile}><label htmlFor="profile-name">Full name</label><input id="profile-name" value={profileName} onChange={(event) => setProfileName(event.target.value)} maxLength={80} required /><button className="primary-button full-button" type="submit">Save profile <span>→</span></button></form>}</div><div className="profile-row"><span>✉</span><div><small>{user?.email ? "EMAIL" : user?.phone ? "PHONE" : "CONTACT"}</small><b>{user?.email || user?.phone || (user ? "Email not added" : "Not signed in")}</b></div>{user && <span>✓</span>}</div><div className="profile-row"><span>◷</span><div><small>MEMBERSHIP</small><b>Free account</b></div><button className="text-action" onClick={() => go("Subscription")}>View plans</button></div><div className="section-heading"><h3>Account Settings</h3></div>{[["♙", "Account Settings", "Manage your personal information"], ["♧", "Refer & Earn", "Invite your friends and earn rewards"], ["▣", "Terms & Policy", "Read our terms and privacy policy"], ["?", "Help & Support", "Get help and contact support"]].map(([glyph, item, subtitle]) => <button className="choice-row" key={item} onClick={() => item === "Account Settings" || item === "Refer & Earn" ? go(item) : setToast(`${item} will be available here.`)}><span className="profile-setting-icon">{glyph}</span><span><b>{item}</b><small>{subtitle}</small></span><span className="chevron">›</span></button>)}{user ? <button className="quiet-link" onClick={signOutApp}>Sign out</button> : <button className="quiet-link" onClick={() => go("Welcome")}>Sign in or create account</button>}</Content>}
 
       {screen === "Auth" && <Content title={authMode === "signup" ? "Create your account" : "Welcome to PYQ Cloud"} subtitle={authMode === "signup" ? "Sign up to save your progress and study data." : "Sign in to keep your learning in sync."} back={() => go("Welcome")}><div className="auth-card"><div className="auth-symbol">☁</div><h2>{authMode === "signup" ? "Start your preparation." : "Make every session count."}</h2><p>{authMode === "signup" ? "Create an account to keep your learning in sync." : "Save your progress and pick up wherever you left off."}</p>{authError && <p className="auth-feedback error" role="alert">{authError}</p>}{authNotice && <p className="auth-feedback" role="status">{authNotice}</p>}<form className="auth-form" onSubmit={submitAuth}><label htmlFor="email">Email address</label><input id="email" name="email" type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="you@example.com" required /><label htmlFor="password">Password</label><input id="password" name="password" type="password" autoComplete={authMode === "signup" ? "new-password" : "current-password"} minLength="8" placeholder="At least 8 characters" required />{authMode === "signup" && <><label htmlFor="confirm-password">Confirm password</label><input id="confirm-password" name="confirmPassword" type="password" autoComplete="new-password" minLength="8" placeholder="Enter your password again" required /></>}<button className="primary-button full-button" type="submit" disabled={authBusy}>{authBusy ? "Please wait…" : authMode === "signup" ? "Create account" : "Sign in"} <span>→</span></button></form>{authMode === "signin" && <button className="auth-inline-link" onClick={() => { setAuthError(""); setAuthNotice(""); go("Reset Password"); }}>Forgot password?</button>}<button className="quiet-link" onClick={() => { setAuthMode((value) => value === "signup" ? "signin" : "signup"); setAuthError(""); setAuthNotice(""); }}>{authMode === "signup" ? "Already have an account? Sign in" : "New here? Create an account"}</button><small className="auth-note">Sign-in is secured by Firebase. Your study data syncs with Supabase.</small></div></Content>}
-      {screen === "Auth Confirmation" && <Content title="Check your email" subtitle="One quick step to activate your account." back={() => go("Auth")}><div className="auth-card"><div className="auth-symbol">✉</div><h2>Confirm your email</h2><p className="auth-feedback" role="status">{authNotice || `We sent a confirmation link to ${authEmail}. Open it to activate your account, then come back here.`}</p>{authError && <p className="auth-feedback error" role="alert">{authError}</p>}<button className="primary-button full-button" onClick={confirmFirebaseEmail} disabled={authBusy}>{authBusy ? "Checking…" : "I’ve verified my email"} <span>→</span></button><button className="quiet-link" onClick={resendSignupConfirmation} disabled={authBusy}>{authBusy ? "Sending…" : "Resend confirmation email"}</button><button className="quiet-link" onClick={async () => { if (getFirebaseAuth().currentUser) await firebaseSignOut(getFirebaseAuth()); setAuthMode("signin"); setAuthError(""); setAuthNotice(""); go("Auth"); }}>Use a different account</button></div></Content>}
+      {screen === "Auth Confirmation" && <Content title="Check your email" subtitle="One quick step to activate your account." back={() => go("Auth")}><div className="auth-card"><div className="auth-symbol">✉</div><h2>Confirm your email</h2><p className="auth-feedback" role="status">{authNotice || `We sent a confirmation link to ${authEmail}. Open it to activate your account, then come back here.`}</p>{authError && <p className="auth-feedback error" role="alert">{authError}</p>}<button className="primary-button full-button" onClick={confirmFirebaseEmail} disabled={authBusy}>{authBusy ? "Checking…" : "I’ve verified my email"} <span>→</span></button><button className="quiet-link" onClick={resendSignupConfirmation} disabled={authBusy}>{authBusy ? "Sending…" : "Resend confirmation email"}</button><button className="quiet-link" onClick={async () => { cacheWriteAllowedRef.current = false; if (getFirebaseAuth().currentUser) await firebaseSignOut(getFirebaseAuth()); await clearAppSnapshot(); setAuthMode("signin"); setAuthError(""); setAuthNotice(""); go("Auth"); }}>Use a different account</button></div></Content>}
       {screen === "Reset Password" && <Content title="Reset your password" subtitle={user ? "Choose a new password for your account." : "Enter your account email and we’ll send a secure reset link."} back={() => go("Auth")}><div className="auth-card"><div className="auth-symbol">☁</div><h2>{user ? "Choose a new password." : "Get back into your account."}</h2>{authError && <p className="auth-feedback error" role="alert">{authError}</p>}{user ? <form className="auth-form" onSubmit={updatePassword}><label htmlFor="new-password">New password</label><input id="new-password" name="newPassword" type="password" autoComplete="new-password" minLength="8" placeholder="At least 8 characters" required /><label htmlFor="confirm-new-password">Confirm new password</label><input id="confirm-new-password" name="confirmPassword" type="password" autoComplete="new-password" minLength="8" placeholder="Enter it again" required /><button className="primary-button full-button" type="submit" disabled={authBusy}>{authBusy ? "Updating…" : "Update password"} <span>→</span></button></form> : <form className="auth-form" onSubmit={sendPasswordReset}><label htmlFor="reset-email">Email address</label><input id="reset-email" type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="you@example.com" required /><button className="primary-button full-button" type="submit" disabled={authBusy}>{authBusy ? "Sending…" : "Send reset link"} <span>→</span></button></form>}</div></Content>}
       {screen === "Reset Email Sent" && <Content title="Check your email" subtitle="Use the secure link to set a new password." back={() => go("Auth")}><div className="auth-card"><div className="auth-symbol">✉</div><h2>Reset link sent</h2><p className="auth-feedback" role="status">{authNotice}</p><button className="primary-button full-button" onClick={() => go("Auth")}>Back to sign in <span>→</span></button><button className="quiet-link" onClick={() => go("Reset Password")}>Try another email</button></div></Content>}
 
