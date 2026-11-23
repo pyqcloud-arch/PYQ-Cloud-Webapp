@@ -39,7 +39,12 @@ exports.ensureSupabaseAuthenticatedRole = functions.region("us-central1").https.
   return { role: "authenticated" };
 });
 
-exports.adminDeleteFirebaseUser = onCall({ region: "us-central1", secrets: [supabaseSecret] }, async (request) => {
+exports.adminDeleteFirebaseUser = onCall({
+  region: "us-central1",
+  secrets: [supabaseSecret],
+  // Use the same Firebase Auth service account as the existing Gen 1 auth functions.
+  serviceAccount: "pyq-cloud@appspot.gserviceaccount.com",
+}, async (request) => {
   const callerUid = request.auth?.uid;
   const targetProfileId = request.data?.profileId;
   if (!callerUid) throw new HttpsError("unauthenticated", "Sign in before deleting an account.");
@@ -75,7 +80,13 @@ exports.adminDeleteFirebaseUser = onCall({ region: "us-central1", secrets: [supa
 
   try { await getAuth().deleteUser(target.firebase_uid); }
   catch (error) {
-    if (error?.code !== "auth/user-not-found") throw new HttpsError("internal", "Firebase could not delete this account.");
+    if (error?.code !== "auth/user-not-found") {
+      console.error("adminDeleteFirebaseUser Firebase Auth delete failed", {
+        code: error?.code || "unknown",
+        message: String(error?.message || "").slice(0, 240),
+      });
+      throw new HttpsError("internal", "Firebase could not delete this account.");
+    }
   }
   try {
     const deleted = await query(`profiles?id=eq.${encodeURIComponent(targetProfileId)}`, {
@@ -84,6 +95,10 @@ exports.adminDeleteFirebaseUser = onCall({ region: "us-central1", secrets: [supa
     });
     if (!deleted.length) throw new HttpsError("internal", "The account was removed from Firebase, but its app data could not be confirmed as deleted.");
   } catch (error) {
+    console.error("adminDeleteFirebaseUser Supabase profile cleanup failed", {
+      code: error?.code || "unknown",
+      message: String(error?.message || "").slice(0, 240),
+    });
     if (error instanceof HttpsError) throw error;
     throw new HttpsError("internal", "The account was removed from Firebase, but its app data could not be confirmed as deleted.");
   }
