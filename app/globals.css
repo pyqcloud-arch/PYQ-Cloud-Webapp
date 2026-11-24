@@ -3103,6 +3103,40 @@ html, body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", 
 
 /* Compact desktop viewport (e.g. 1109×805 laptop browser). */
 @media (min-width: 900px) and (max-width: 1199px) {
+  /* Signed-out screens do not render the desktop sidebar/header; let auth use
+     the full viewport instead of leaving the reserved sidebar column blank. */
+  .phone-screen:has(.auth-card):not(:has(.desktop-sidebar)) {
+    display:flex;
+    min-height:100dvh;
+    height:100dvh;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    overflow-y:auto;
+  }
+  .phone-screen:has(.auth-card):not(:has(.desktop-sidebar)) > .content-page {
+    width:min(100%,720px);
+    max-height:100dvh;
+    margin:0 auto;
+    padding:24px clamp(22px,4vw,40px);
+    gap:18px;
+    overflow-y:auto;
+  }
+  .phone-screen:has(.auth-card):not(:has(.desktop-sidebar)) .content-body {
+    width:100%;
+    max-width:none;
+    gap:18px;
+  }
+  .phone-screen:has(.auth-card):not(:has(.desktop-sidebar)) .page-heading {
+    min-height:60px;
+    margin:0;
+  }
+  .phone-screen:has(.auth-card):not(:has(.desktop-sidebar)) .auth-card {
+    width:min(100%,620px);
+    align-self:center;
+    padding:clamp(20px,3vw,32px);
+  }
+
   .home-page { gap:14px 18px; padding-top:22px; padding-bottom:34px; }
   .home-page .greeting-row { min-height:76px; align-items:center; }
   .home-page .greeting-row h1 { font-size:clamp(22px,2.4vw,28px); line-height:1.2; }
@@ -3141,6 +3175,23 @@ html, body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", 
   .tests-page .test-count-options button.selected { border-color:var(--purple-light); background:#251b3a; color:#e0ccff; }
   .tests-page .test-time-note { display:flex; align-items:flex-start; gap:6px; margin:9px 0; color:var(--tertiary); font-size:11px; line-height:1.4; }
   .tests-page .test-history-heading { margin:2px 0 -6px; }
+  .tests-page .test-history-heading button {
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    min-height:34px;
+    padding:0 11px;
+    border:1px solid #473565;
+    border-radius:8px;
+    appearance:none;
+    background:#1b1727;
+    color:#c9aaff;
+    font:inherit;
+    font-size:12px;
+    font-weight:500;
+    line-height:1;
+  }
+  .tests-page .test-history-heading button:hover { border-color:#7955b2; background:#241b35; color:#e5d4ff; }
   .tests-page .test-history-list { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .tests-page .test-history-item { display:flex; align-items:center; justify-content:space-between; gap:10px; min-width:0; padding:12px; border:1px solid var(--border); border-radius:12px; background:var(--surface); text-align:left; }
   .tests-page .test-history-item>span { display:flex; flex-direction:column; gap:4px; min-width:0; }
