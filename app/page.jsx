@@ -71,7 +71,10 @@ function renderExplanationNode(node, key) {
 
 function RichExplanation({ content }) {
   if (typeof content !== "string" || !content.trim()) return null;
-  if (!/<\s*\/?\s*[a-z][^>]*>/i.test(content)) return <p>{content}</p>;
+  if (!/<\s*\/?\s*[a-z][^>]*>/i.test(content)) {
+    const paragraphs = content.replace(/\r\n?/g, "\n").split(/\n\s*\n/);
+    return <div className="rich-explanation rich-explanation-plain">{paragraphs.map((paragraph, paragraphIndex) => <p key={paragraphIndex}>{paragraph.split("\n").map((line, lineIndex) => <Fragment key={lineIndex}>{lineIndex > 0 && <br />}{line}</Fragment>)}</p>)}</div>;
+  }
   const parsed = parseExplanationMarkup(content);
   return <div className="rich-explanation">{parsed.children.map((child, index) => renderExplanationNode(child, index))}</div>;
 }
