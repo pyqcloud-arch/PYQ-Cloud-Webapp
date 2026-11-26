@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { authorizeAdmin } from "../../../../lib/supabase/admin-server";
+import { createAnnouncement } from "../../../../lib/notifications/push-server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -195,8 +196,21 @@ export async function POST(request) {
 
   const { data, error } = await auth.database.from("questions").upsert(uniqueRows, { onConflict: "id" }).select("id");
   if (error) return response({ error: "Could not save questions. Confirm the database schema and server secret are configured." }, 500);
+  const saved = data?.length ?? uniqueRows.length;
+  if (saved > 0) {
+    try {
+      await createAnnouncement(auth.database, {
+        title: "New questions added",
+        body: `${saved} new practice question${saved === 1 ? " is" : "s are"} now available. Open Practice to try them.`,
+        url: "/",
+        createdBy: auth.user.id,
+      });
+    } catch (notificationError) {
+      console.error("New question notification could not be sent", notificationError.message);
+    }
+  }
   console.info("Admin question write completed", { adminEmail: auth.adminEmail, count: data?.length ?? uniqueRows.length, skippedDuplicates: skipped });
-  return response({ saved: data?.length ?? uniqueRows.length, skipped });
+  return response({ saved, skipped });
 }
 
 export async function DELETE(request) {

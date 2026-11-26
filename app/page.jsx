@@ -1,6 +1,6 @@
 "use client";
 
-import { createElement, Fragment, useEffect, useRef, useState } from "react";
+import { createElement, Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { createClient } from "../lib/supabase/client";
 import { Lottie } from "lottie-react";
 import {
@@ -417,6 +417,83 @@ export default function Page() {
   const [authError, setAuthError] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   const [user, setUser] = useState(null);
+  const [notificationOpen, setNotificationOpen] = useState(false);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [notificationError, setNotificationError] = useState("");
+  const [pushSubscribed, setPushSubscribed] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [notificationBusy, setNotificationBusy] = useState(false);
+  const notificationApi = useCallback(async (method = "GET", body) => {
+    let accessToken;
+    if (usesFirebaseAuth()) accessToken = await getFirebaseAuth().currentUser?.getIdToken();
+    else {
+      const { data, error } = await supabase.auth.getSession();
+      if (error) throw error;
+      accessToken = data.session?.access_token;
+    }
+    if (!accessToken) throw new Error("Sign in again to view notifications.");
+    const response = await fetch("/api/notifications", { method, headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` }, body: body ? JSON.stringify(body) : undefined, cache: "no-store" });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "Could not load notifications.");
+    return result;
+  }, []);
+  const refreshNotifications = useCallback(async () => {
+    try {
+      const result = await notificationApi();
+      setNotifications(result.notifications || []);
+      setUnreadNotifications(result.unread || 0);
+      setNotificationError("");
+    } catch (error) {
+      if (error.message?.includes("migration")) setNotificationError("Notifications will appear after the notification database migration is applied.");
+      else setNotificationError(error.message || "Could not load notifications.");
+    }
+  }, [notificationApi]);
+  const openNotifications = async () => {
+    const opening = !notificationOpen;
+    setNotificationOpen(opening);
+    if (!opening) return;
+    setNotificationBusy(true);
+    try {
+      const result = await notificationApi();
+      setNotifications(result.notifications || []);
+      if ((result.unread || 0) > 0) {
+        await notificationApi("POST", { action: "mark-read" });
+        setNotifications((result.notifications || []).map((item) => ({ ...item, read: true })));
+      }
+      setUnreadNotifications(0);
+      setNotificationError("");
+      const registration = await navigator.serviceWorker?.getRegistration();
+      setPushSubscribed(Boolean(await registration?.pushManager?.getSubscription()));
+    } catch (error) {
+      setNotificationError(error.message || "Could not load notifications.");
+    } finally { setNotificationBusy(false); }
+  };
+  const enablePushNotifications = async () => {
+    const vapidKey = process.env.NEXT_PUBLIC_WEB_PUSH_VAPID_KEY;
+    if (!vapidKey) { setNotificationError("Push delivery is not configured yet. Please try again later."); return; }
+    if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) { setNotificationError("This browser does not support push notifications."); return; }
+    setPushBusy(true); setNotificationError("");
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") throw new Error(permission === "denied" ? "Notifications are blocked in browser settings." : "Allow notifications to enable push alerts.");
+      const registration = await navigator.serviceWorker.ready;
+      const existing = await registration.pushManager.getSubscription();
+      const subscription = existing || await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: Uint8Array.from(atob(vapidKey.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(vapidKey.length / 4) * 4, "=")), (char) => char.charCodeAt(0)) });
+      await notificationApi("POST", { action: "subscribe", subscription: subscription.toJSON() });
+      setPushSubscribed(true);
+    } catch (error) { setNotificationError(error.message || "Could not enable push notifications."); }
+    finally { setPushBusy(false); }
+  };
+  useEffect(() => {
+    if (!user?.id) { setNotifications([]); setUnreadNotifications(0); setNotificationOpen(false); return undefined; }
+    refreshNotifications();
+    const refreshOnReturn = () => { if (document.visibilityState === "visible") refreshNotifications(); };
+    window.addEventListener("focus", refreshOnReturn);
+    document.addEventListener("visibilitychange", refreshOnReturn);
+    const timer = window.setInterval(refreshNotifications, 60000);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", refreshOnReturn); document.removeEventListener("visibilitychange", refreshOnReturn); };
+  }, [user?.id, refreshNotifications]);
   const updateUserMetadata = async (patch) => {
     if (user?.authProvider === "firebase") {
       const { data, error } = await supabase.rpc("update_my_firebase_metadata", { p_patch: patch });
@@ -1860,7 +1937,7 @@ export default function Page() {
       </aside>}
       {user && <header className="desktop-header">
         <div className="desktop-breadcrumb"><span>PYQ CLOUD</span><b>{screen === "Home" ? "Overview" : screen}</b></div>
-        <div className="desktop-header-actions"><span className="desktop-today">{timeGreeting}{displayName ? `, ${displayName}` : ""}</span><button className="desktop-notice" aria-label="Notifications" onClick={() => setToast("You’re all caught up") }><img src={figmaAsset.bell} alt="" /></button><button className="desktop-user" onClick={() => go("My Profile")}>{avatarUrl ? <img src={avatarUrl} alt={`${displayName || "Your"} profile photo`} /> : <span className="desktop-user-avatar-placeholder" aria-hidden="true"><img src={figmaAsset.profile} alt="" /></span>}<span>{displayName || "Enter your name"}</span><i>⌄</i></button></div>
+        <div className="desktop-header-actions"><span className="desktop-today">{timeGreeting}{displayName ? `, ${displayName}` : ""}</span><button className="desktop-notice" aria-label="Notifications" aria-expanded={notificationOpen} onClick={openNotifications}><img src={figmaAsset.bell} alt="" />{unreadNotifications > 0 && <i className="notification-unread-dot" aria-label={`${unreadNotifications} unread notifications`} />}</button><button className="desktop-user" onClick={() => go("My Profile")}>{avatarUrl ? <img src={avatarUrl} alt={`${displayName || "Your"} profile photo`} /> : <span className="desktop-user-avatar-placeholder" aria-hidden="true"><img src={figmaAsset.profile} alt="" /></span>}<span>{displayName || "Enter your name"}</span><i>⌄</i></button></div>
       </header>}
       <div className="status-bar"><span>9:41</span><img src={figmaAsset.signal} alt="" /></div>
       {screen === "Welcome" && <section className="welcome-flow">
@@ -1875,8 +1952,10 @@ export default function Page() {
       {screen === "Home" && <header className="topbar">
         <button className="icon-button" aria-label="Open menu" onClick={() => setDrawer(true)}><img src={figmaAsset.menu} alt="" /></button>
         <div className="brand-word"><img src="/brand/cloud-ai-logo.png" alt="" /><span className="brand-title"><span>PYQ</span> <em>Cloud</em></span></div>
-      <button className="icon-button notification" aria-label="Notifications" onClick={async () => { if (!("Notification" in window)) return setToast("Notifications aren’t supported in this browser"); const permission = await Notification.requestPermission(); setToast(permission === "granted" ? "Permission granted. Push delivery still needs setup." : "You can enable notifications in browser settings"); }}><img src={figmaAsset.bell} alt="" /></button>
+      <button className="icon-button notification" aria-label="Notifications" aria-expanded={notificationOpen} onClick={openNotifications}><img src={figmaAsset.bell} alt="" />{unreadNotifications > 0 && <i className="notification-unread-dot" aria-label={`${unreadNotifications} unread notifications`} />}</button>
       </header>}
+
+      {user && notificationOpen && <div className="notification-panel" role="dialog" aria-label="Notifications"><div className="notification-panel-heading"><div><b>Notifications</b><small>{unreadNotifications ? `${unreadNotifications} unread` : "You’re all caught up"}</small></div><button aria-label="Close notifications" onClick={() => setNotificationOpen(false)}>×</button></div><div className="notification-panel-list">{notificationBusy ? <p className="notification-empty">Loading notifications…</p> : notificationError && !notifications.length ? <p className="notification-empty">{notificationError}</p> : notifications.length ? notifications.map((item) => <button type="button" className={`notification-item${item.read ? " read" : ""}`} key={item.id} onClick={() => { setNotificationOpen(false); if (item.target_url && item.target_url !== "/") window.location.assign(item.target_url); }}><b>{item.title}</b><span>{item.body}</span><time>{new Date(item.created_at).toLocaleString()}</time></button>) : <p className="notification-empty">No notifications yet. New question sets and admin updates will appear here.</p>}</div>{notificationError && notifications.length > 0 && <p className="notification-inline-error">{notificationError}</p>}{!pushSubscribed && <button className="notification-enable-push" type="button" onClick={enablePushNotifications} disabled={pushBusy}>{pushBusy ? "Enabling…" : "Enable push alerts on this device"}</button>}{pushSubscribed && <p className="notification-push-enabled">Push alerts are enabled on this device.</p>}</div>}
 
       {screen === "Home" && <section className="home-page">
         <div className="greeting-row"><div><p className="eyebrow">{timeGreeting}{firstName ? <>, <b>{firstName} 👋</b></> : ""}</p><h1>PYQs (2013-2026) are<br />ready for you.</h1></div><div className="cloud-mascot" role="img" aria-label="PYQ Cloud animated mascot"><Lottie className="home-mascot-animation" src="/mascot-lottie/cloudy-idle.json?v=figma-home-20261028" autoplay loop /></div></div>

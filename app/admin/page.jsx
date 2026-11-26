@@ -58,6 +58,8 @@ export default function AdminPage() {
   const [reports, setReports] = useState([]);
   const [reportsBusy, setReportsBusy] = useState(false);
   const [reportsError, setReportsError] = useState("");
+  const [announcement, setAnnouncement] = useState({ title: "", body: "", url: "/" });
+  const [announcementBusy, setAnnouncementBusy] = useState(false);
   const [reportFilter, setReportFilter] = useState("open");
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -171,6 +173,20 @@ export default function AdminPage() {
       await loadReports();
     } catch (error) { setReportsError(error.message); }
     finally { setReportsBusy(false); }
+  };
+
+  const sendAnnouncement = async (event) => {
+    event.preventDefault();
+    setAnnouncementBusy(true);
+    setNotice("");
+    try {
+      const result = await request("/api/admin/notifications", { method: "POST", body: JSON.stringify(announcement) });
+      setNotice(result.pushConfigured
+        ? `Announcement saved for all users; push sent to ${result.delivered} subscribed devices.`
+        : "Announcement saved for everyone. Browser push delivery still needs VAPID production keys.");
+      setAnnouncement({ title: "", body: "", url: "/" });
+    } catch (error) { setNotice(error.message); }
+    finally { setAnnouncementBusy(false); }
   };
 
   const deleteReportedQuestion = async (report) => {
@@ -423,7 +439,7 @@ export default function AdminPage() {
   return <main className="admin-screen">
     <header className="admin-topbar"><a href="/" className="admin-brand">PYQ <span>CLOUD</span></a><div className="admin-topbar-actions"><span>{session?.user?.email || session?.user?.phone}</span><button className="admin-button secondary" onClick={() => window.location.assign("/")}>Back to app</button></div></header>
     <div className="admin-layout">
-      <aside className="admin-sidebar" aria-label="Admin sections"><small>WORKSPACE</small>{[["questions", "Question bank"], ["reports", "Question reports"], ["catalog", "Subjects & years"], ["users", "User accounts"], ["home-note", "Home note"]].map(([sectionId, label]) => <button type="button" className={activeAdminSection === sectionId ? "active" : ""} key={sectionId} onClick={() => navigateAdminSection(sectionId)}>{label}{sectionId === "reports" && reports.filter((report) => report.status === "open").length > 0 && <span className="admin-nav-count">{reports.filter((report) => report.status === "open").length}</span>}</button>)}<span>Signed in as admin</span></aside>
+      <aside className="admin-sidebar" aria-label="Admin sections"><small>WORKSPACE</small>{[["questions", "Question bank"], ["reports", "Question reports"], ["catalog", "Subjects & years"], ["users", "User accounts"], ["notifications", "Push notifications"], ["home-note", "Home note"]].map(([sectionId, label]) => <button type="button" className={activeAdminSection === sectionId ? "active" : ""} key={sectionId} onClick={() => navigateAdminSection(sectionId)}>{label}{sectionId === "reports" && reports.filter((report) => report.status === "open").length > 0 && <span className="admin-nav-count">{reports.filter((report) => report.status === "open").length}</span>}</button>)}<span>Signed in as admin</span></aside>
       <section className="admin-content">
         <div className="admin-heading"><div><span className="admin-eyebrow">PYQ CLOUD · CONTROL CENTER</span><h1>Admin workspace</h1><p>Manage the question bank, moderation queue, practice catalogue and user access.</p></div><div className="admin-heading-actions"><span className="admin-live-indicator"><i /> Connected to Supabase</span><div className="admin-count"><strong>{questionCount.toLocaleString()}</strong><span>questions in bank</span></div></div></div>
         {notice && <div className="admin-notice" role="status">{notice}<button aria-label="Dismiss message" onClick={() => setNotice("")}>×</button></div>}
@@ -453,6 +469,8 @@ export default function AdminPage() {
         </div>
 
         <section className="admin-card" id="home-note"><div className="admin-card-heading"><span className="admin-card-icon">✦</span><div><h2>Home screen note</h2><p>Change the note heading and message shown on every user’s home screen.</p></div></div><form className="admin-home-note-form" onSubmit={saveHomeNote}><label>Heading<input value={homeNote.heading} onChange={(event) => setHomeNote({ ...homeNote, heading: event.target.value })} maxLength={100} required /></label><label>Subheading<input value={homeNote.subtitle} onChange={(event) => setHomeNote({ ...homeNote, subtitle: event.target.value })} maxLength={160} /></label><label>Message<textarea value={homeNote.text} onChange={(event) => setHomeNote({ ...homeNote, text: event.target.value })} maxLength={500} rows={3} required /></label><button className="admin-button primary" type="submit" disabled={homeNoteBusy}>{homeNoteBusy ? "Saving…" : "Save home note"}</button></form></section>
+
+        <section className="admin-card" id="notifications"><div className="admin-card-heading"><span className="admin-card-icon">♧</span><div><h2>Send a push notification</h2><p>Send an in-app announcement to every account. Users who enable browser notifications will also receive it as a push.</p></div></div><form className="admin-notification-form" onSubmit={sendAnnouncement}><label>Title<input value={announcement.title} onChange={(event) => setAnnouncement({ ...announcement, title: event.target.value })} maxLength={120} required placeholder="e.g. New practice set available" /></label><label>Message<textarea value={announcement.body} onChange={(event) => setAnnouncement({ ...announcement, body: event.target.value })} maxLength={500} rows={3} required placeholder="Write a short announcement for all users" /></label><label>When opened<input value={announcement.url} onChange={(event) => setAnnouncement({ ...announcement, url: event.target.value })} maxLength={300} placeholder="/" /></label><button className="admin-button primary" type="submit" disabled={announcementBusy}>{announcementBusy ? "Sending…" : "Send to all users"}</button></form></section>
 
         <section className="admin-card admin-music-card"><div className="admin-card-heading"><span className="admin-card-icon">♫</span><div><h2>Focus music</h2><p>Choose the audio played in the app and set its volume.</p></div></div><div className="admin-music-controls"><label className="admin-music-enabled"><input type="checkbox" checked={musicSettings.enabled} onChange={(event) => setMusicSettings({ ...musicSettings, enabled: event.target.checked })} />Enable background music</label><label>Built-in track<select value={BUILT_IN_MUSIC.some((track) => track.url === musicSettings.trackUrl) ? musicSettings.trackUrl : "custom"} onChange={(event) => { if (event.target.value !== "custom") setMusicSettings({ ...musicSettings, trackUrl: event.target.value }); }}><option value="/audio/cloud-soft-focus.wav">Cloud Focus</option><option value="/audio/cloud-evening-piano.wav">Evening Piano</option><option value="/audio/pyq-focus.wav">Classic Focus</option><option value="custom">Custom audio URL</option></select></label><label>Audio file URL<input value={musicSettings.trackUrl} onChange={(event) => setMusicSettings({ ...musicSettings, trackUrl: event.target.value })} placeholder="/audio/pyq-focus.wav or https://…" /></label><label>Volume <span>{Math.round(Number(musicSettings.volume) * 100)}%</span><input type="range" min="0" max="1" step="0.01" value={musicSettings.volume} onChange={(event) => setMusicSettings({ ...musicSettings, volume: Number(event.target.value) })} /></label><button className="admin-button primary" onClick={saveMusicSettings} disabled={musicBusy}>{musicBusy ? "Saving…" : "Save music settings"}</button></div></section>
 

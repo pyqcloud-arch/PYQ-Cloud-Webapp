@@ -1,4 +1,5 @@
 import { adminResponse, authorizeAdmin } from "../../../../lib/supabase/admin-server";
+import { createAnnouncement } from "../../../../lib/notifications/push-server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -93,8 +94,21 @@ export async function POST(request) {
     const field = kind === "subject" ? "subjects" : "years";
     const items = Array.isArray(catalog[field]) ? [...catalog[field]] : [];
     const index = items.findIndex((item) => normalize(kind, item?.value).toLowerCase() === value.toLowerCase());
+    const notifyUsers = index < 0 || items[index]?.active === false;
     if (index < 0) items.push({ value, active: true }); else items[index] = { ...items[index], value: items[index].value || value, active: true };
     await saveCatalog(auth.database, { ...catalog, [field]: items });
+    if (notifyUsers) {
+      try {
+        await createAnnouncement(auth.database, {
+          title: kind === "year" ? "New practice year added" : "New practice subject added",
+          body: kind === "year" ? `The ${value} practice set is now available.` : `${value} is now available in Practice by Subject.`,
+          url: "/",
+          createdBy: auth.user.id,
+        });
+      } catch (notificationError) {
+        console.error("New catalogue notification could not be sent", notificationError.message);
+      }
+    }
     return adminResponse({ saved: true, ...(await readCatalog(auth.database)) });
   } catch (error) { return adminResponse({ error: error.message }, 500); }
 }

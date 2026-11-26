@@ -1,4 +1,4 @@
-const CACHE_NAME = "pyq-cloud-shell-v7";
+const CACHE_NAME = "pyq-cloud-shell-v8";
 const APP_SHELL = [
   "/",
   "/manifest.json",
@@ -15,7 +15,31 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)))));
   self.clients.claim();
 });
+self.addEventListener("push", (event) => {
+  let payload = {};
+  try { payload = event.data?.json() || {}; } catch { payload = { body: event.data?.text() || "Open PYQ Cloud to see what’s new." }; }
+  event.waitUntil(self.registration.showNotification(payload.title || "PYQ Cloud", {
+    body: payload.body || "There’s something new to explore.",
+    icon: "/icons/pyq-cloud-icon-v2-192.png",
+    badge: "/icons/pyq-cloud-icon-v2-192.png",
+    tag: payload.id || "pyq-cloud-announcement",
+    data: { url: typeof payload.url === "string" && payload.url.startsWith("/") && !payload.url.startsWith("//") ? payload.url : "/" },
+  }));
+});
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const targetUrl = new URL(event.notification.data?.url || "/", self.location.origin).href;
+  event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (clients) => {
+    const existing = clients.find((client) => new URL(client.url).origin === self.location.origin);
+    if (existing) {
+      await existing.navigate(targetUrl);
+      return existing.focus();
+    }
+    return self.clients.openWindow(targetUrl);
+  }));
+});
 self.addEventListener("fetch", (event) => {
+  if (["localhost", "127.0.0.1"].includes(self.location.hostname)) return;
   if (event.request.method !== "GET" || new URL(event.request.url).origin !== self.location.origin) return;
   const url = new URL(event.request.url);
   const isDocument = event.request.mode === "navigate";
